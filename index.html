@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0f172a">
+<link rel="icon" href="icons/icon-192.png">
+
+<!-- iOS support (optional but nice) -->
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+
+  <title>Pardner Draw</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <script src="js/pardner-draw.js" defer></script>
+</head>
+
+<body>
+  <div class="app">
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">PD</div>
+        <div>
+          <h2>Pardner Draw</h2>
+          <div class="sub">Single group • Payouts every Tuesday</div>
+        </div>
+      </div>
+
+      <div class="nav">
+        <button class="active" data-page="dashboard">📊 Dashboard</button>
+        <button data-page="payees">👥 Payees</button>
+        <button data-page="payments">💷 Add Payment</button>
+        <button data-page="draws">🎯 Record Draw</button>
+        <button data-page="weekly">🗓️ Weekly Summary</button>
+        <button data-page="settings">⚙️ Settings</button>
+      </div>
+
+      <div class="sidebar-foot help">
+        Data saves on this device (LocalStorage). Use Export/Import in Settings to move data.
+      </div>
+    </aside>
+
+    <!-- CONTENT -->
+    <main class="content">
+      <div class="topbar">
+        <div>
+          <p class="title" id="pageTitle">Dashboard</p>
+          <p class="subtitle" id="pageSubtitle">Overview of hands, funding, and Tuesday payout status.</p>
+        </div>
+
+        <div class="top-actions">
+          <button class="btn" id="quickAddPayment">+ Payment</button>
+          <button class="btn primary" id="quickRecordDraw">✔ Draw</button>
+        </div>
+      </div>
+
+      <!-- DASHBOARD -->
+      <section class="page" id="page-dashboard">
+        <div class="grid cols-4">
+          <div class="card kpi">
+            <h3>Total hands paid in</h3>
+            <div class="big" id="kpiTotalHands">0</div>
+            <div class="small" id="kpiTotalMoney">£0 total</div>
+          </div>
+
+          <div class="card kpi">
+            <h3>Payees (N)</h3>
+            <div class="big" id="kpiN">0</div>
+            <div class="small">Target pot = N × £50</div>
+          </div>
+
+          <div class="card kpi">
+            <h3>Draws funded</h3>
+            <div class="big" id="kpiFundedDraws">0</div>
+            <div class="small" id="kpiFundedSub">0 / 0</div>
+          </div>
+
+          <div class="card kpi">
+            <h3>Draws completed</h3>
+            <div class="big" id="kpiCompletedDraws">0</div>
+            <div class="small" id="kpiRemainingSub">Remaining: 0</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <div class="row">
+            <div class="pill mono" id="thisTuesdayPill">This Tuesday: —</div>
+            <div class="pill mono" id="potPill">This week’s pot: £0</div>
+            <div class="pill mono" id="basePotPill">Base pot (N×£50): £0</div>
+            <div class="pill mono" id="ratePill">Funding rate: —</div>
+            <div class="pill mono" id="endDatePill">Estimated end: —</div>
+            <div class="pill mono" id="cycleStartPill">Cycle start: —</div>
+            <div class="pill mono" id="lastPayoutPill">Last payout: —</div>
+            <div class="pill mono" id="cycleEndPill">Cycle end: —</div>
+            <div class="pill warn" id="fundingPill">Not fully funded ⚠️</div>
+            <div class="pill mono" id="kpiAvailablePill">Available funded draws: <span class="mono" id="kpiAvailableDraws">0</span></div>
+          </div>
+
+          <div class="hr"></div>
+
+          <div class="row">
+            <div class="field">
+              <label>Recipient (Not drawn)</label>
+              <select id="dashRecipient"></select>
+              <div class="help">Only payees who haven’t had a draw will show.</div>
+            </div>
+
+            <div class="field">
+              <label>Amount (£)</label>
+              <input id="dashDrawAmount" type="number" min="0" step="50" />
+              <div class="help">Must be £50 multiples.</div>
+            </div>
+
+            <div class="field" style="flex:0 0 auto">
+              <label>&nbsp;</label>
+              <button class="btn primary" id="dashRecordDraw">Record draw</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid cols-2" style="margin-top:14px">
+          <div class="card">
+            <h3>Not drawn yet</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Requested</th>
+                    <th>Total hands</th>
+                    <th>Total paid</th>
+                    <th>Notes</th>
+                  </tr>
+                </thead>
+                <tbody id="notDrawnTable"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Recent activity</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Type</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody id="activityTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- PAYEES -->
+      <section class="page" id="page-payees" style="display:none">
+        <div class="split">
+          <div class="card">
+            <h2>Add Payee</h2>
+            <div class="row">
+              <div class="field">
+              <label>Name</label>
+              <input id="payeeName" placeholder="e.g., John Smith" />
+             </div>
+
+         <div class="field">
+          <label>Hands (shares)</label>
+           <input id="payeeHands" type="number" min="1" step="1" value="1" />
+            <div class="help">1 hand = £50 per week. More hands = more payouts in the cycle.</div>
+        </div>
+
+        <div class="field">
+         <label>Requested draw date (optional)</label>
+          <input id="payeeReqDate" type="date" />
+        </div>
+        </div>
+            <div class="field">
+              <label>Notes (optional)</label>
+              <textarea id="payeeNotes" placeholder="Notes about this payee..."></textarea>
+            </div>
+            <div class="right">
+              <button class="btn primary" id="addPayeeBtn">Add Payee</button>
+            </div>
+            <div class="help">When a payee has had a draw, their row will turn green automatically.</div>
+          </div>
+
+          <div class="card">
+            <h2>Search & Filters</h2>
+            <div class="row">
+              <div class="field">
+                <label>Search</label>
+                <input id="payeeSearch" placeholder="Search name..." />
+              </div>
+              <div class="field">
+                <label>Status</label>
+                <select id="payeeFilter">
+                  <option value="all">All</option>
+                  <option value="notdrawn">Not drawn</option>
+                  <option value="drawn">Drawn</option>
+                </select>
+              </div>
+            </div>
+            <div class="help">Tip: use “Add Payment” action in the table for quick entry.</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <h2>Payees</h2>
+          <div class="table-wrap" style="max-height:520px">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th>Requested draw</th>
+                  <th>Draw date</th>
+                  <th>Total hands</th>
+                  <th>Total paid</th>
+                  <th>Notes</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="payeesTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- PAYMENTS -->
+      <section class="page" id="page-payments" style="display:none">
+        <div class="card">
+          <h2>Add Payment (£50 multiples = hands)</h2>
+          <div class="row">
+            <div class="field">
+              <label>Payee</label>
+              <select id="paymentPayee"></select>
+            </div>
+            <div class="field">
+              <label>Date paid</label>
+              <input id="paymentDate" type="date" />
+            </div>
+            <div class="field">
+              <label>Amount (£)</label>
+              <input id="paymentAmount" type="number" min="0" step="50" placeholder="50, 100, 150..." />
+              <div class="help" id="paymentHandsHelp">Hands: 0</div>
+            </div>
+          </div>
+          <div class="field">
+            <label>Note (optional)</label>
+            <input id="paymentNote" placeholder="e.g., paid ahead for 2 weeks" />
+          </div>
+          <div class="right">
+            <button class="btn primary" id="savePaymentBtn">Save Payment</button>
+          </div>
+          <div class="help">Payments are saved and can be viewed in Weekly Summary and Reports.</div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <h2>Latest Payments</h2>
+          <div class="table-wrap" style="max-height:420px">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Payee</th>
+                  <th>Amount</th>
+                  <th>Hands</th>
+                  <th>Note</th>
+                </tr>
+              </thead>
+              <tbody id="paymentsTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- DRAWS -->
+      <section class="page" id="page-draws" style="display:none">
+        <div class="card">
+          <h2>Record Draw (Tuesday payout)</h2>
+          <div class="row">
+            <div class="field">
+              <label>Draw date (should be a Tuesday)</label>
+              <input id="drawDate" type="date" />
+              <div class="help">Your schedule is every Tuesday. The system will still save any date you choose.</div>
+            </div>
+            <div class="field">
+              <label>Recipient (Not drawn)</label>
+              <select id="drawPayee"></select>
+            </div>
+            <div class="field">
+              <label>Amount (£)</label>
+              <input id="drawAmount" type="number" min="0" step="50" />
+            </div>
+          </div>
+          <div class="field">
+            <label>Note (optional)</label>
+            <input id="drawNote" placeholder="e.g., paid out from this week’s pot" />
+          </div>
+          <div class="right">
+            <button class="btn primary" id="saveDrawBtn">Save Draw</button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <h2>Draw History</h2>
+          <div class="table-wrap" style="max-height:420px">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Recipient</th>
+                  <th>Amount</th>
+                  <th>Note</th>
+                </tr>
+              </thead>
+              <tbody id="drawsTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- WEEKLY -->
+      <section class="page" id="page-weekly" style="display:none">
+        <div class="card">
+          <h2>Weekly Summary (Wednesday → Tuesday)</h2>
+          <div class="row">
+            <div class="field">
+              <label>Week ending (Tuesday)</label>
+              <input id="weekEnding" type="date" />
+              <div class="help">Choose the Tuesday. The week includes Wednesday 00:00 through Tuesday 23:59.</div>
+            </div>
+            <div class="w-auto">
+              <label>&nbsp;</label>
+              <button class="btn" id="prevWeekBtn">← Prev</button>
+            </div>
+            <div class="w-auto">
+              <label>&nbsp;</label>
+              <button class="btn" id="nextWeekBtn">Next →</button>
+            </div>
+            <div class="w-auto">
+              <label>&nbsp;</label>
+              <button class="btn primary" id="refreshWeekBtn">Refresh</button>
+            </div>
+          </div>
+
+          <div class="hr"></div>
+
+          <div class="grid cols-3">
+            <div class="card kpi" style="box-shadow:none;border-style:dashed">
+              <h2>Total collected</h2>
+              <div class="big" id="wkTotalMoney">£0</div>
+              <div class="small" id="wkFundingText">—</div>
+            </div>
+            <div class="card kpi" style="box-shadow:none;border-style:dashed">
+              <h2>Total hands</h2>
+              <div class="big" id="wkTotalHands">0</div>
+              <div class="small" id="wkHandsText">—</div>
+            </div>
+            <div class="card kpi" style="box-shadow:none;border-style:dashed">
+              <h2>Carryover</h2>
+              <div class="big" id="wkCarryHands">0</div>
+              <div class="small" id="wkCarryText">Hands above N</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <h2>Who paid this week</h2>
+          <div class="table-wrap" style="max-height:520px">
+            <table>
+              <thead>
+                <tr>
+                  <th>Payee</th>
+                  <th>Dates paid</th>
+                  <th>Amount</th>
+                  <th>Hands</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody id="weeklyTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section class="page" id="page-settings" style="display:none">
+        <div class="grid cols-2">
+          <div class="card">
+            <h2>Cycle Settings</h2>
+            <div class="row">
+        <div class="field">
+         <label>Hand value (£)</label>
+         <input id="setHandValue" type="number" min="1" step="1" value="50" />
+        <div class="help">Example: 50 means 1 hand = £50.</div>
+        </div>
+
+        <div class="field">
+         <label>Draw day</label>
+          <select id="setDrawDay">
+           <option value="1">Monday</option>
+           <option value="2">Tuesday</option>
+           <option value="3">Wednesday</option>
+           <option value="4">Thursday</option>
+           <option value="5">Friday</option>
+           <option value="6">Saturday</option>
+           <option value="0">Sunday</option>
+          </select>
+        <div class="help">Payouts happen weekly on this day.</div>
+        </div>
+       </div>
+
+          <div class="card">
+            <h2>Backup / Restore</h2>
+            <div class="field">
+              <label>Export data (JSON)</label>
+              <button class="btn" id="exportBtn">Export to JSON</button>
+              <div class="help">Save the file somewhere safe. You can import later on any device.</div>
+            </div>
+            <div class="field">
+              <label>Import data (JSON)</label>
+              <input id="importFile" type="file" accept="application/json" />
+              <div class="help">Import will replace current data in this browser.</div>
+            </div>
+            <div class="hr"></div>
+            <div class="field">
+              <label>Danger zone</label>
+              <button class="btn danger" id="resetBtn">Reset all data</button>
+              <div class="help">Clears payees, payments, draws, and settings from this browser.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <h2>Data storage details</h2>
+          <p class="muted" style="margin:0">
+            This version saves everything in your browser using <span class="mono">localStorage</span>.
+            That means it can be retrieved any time on this device/browser. To move data to another device, use Export/Import.
+          </p>
+        </div>
+      </section>
+    </main>
+  </div>
+     <!-- EDIT PAYEE MODAL -->
+<div class="modal" id="payeeModal" style="display:none" aria-hidden="true">
+  <div class="modal-backdrop" data-close="1"></div>
+
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="payeeModalTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="payeeModalTitle" style="margin:0">Edit Payee</h2>
+        <div class="help" id="payeeModalSub">Update hands + requested draw date</div>
+      </div>
+      <button class="btn" id="payeeModalCloseBtn" type="button">✕</button>
+    </div>
+
+    <div class="hr"></div>
+
+    <div class="row">
+      <div class="field">
+        <label>Name</label>
+        <input id="editPayeeName" />
+      </div>
+
+      <div class="field">
+        <label>Hands (shares)</label>
+        <input id="editPayeeHands" type="number" min="1" step="1" />
+        <div class="help">Whole number ≥ 1</div>
+      </div>
+
+      <div class="field" style="min-width:260px">
+        <label>Requested draw dates (one per hand)</label>
+        <div id="editPayeeReqDatesWrap" class="stack" style="display:flex;flex-direction:column;gap:8px"></div>
+        <div class="help">If this payee has 3 hands, enter up to 3 requested dates.</div>
+     </div>
+
+    <div class="field">
+      <label>Notes</label>
+      <textarea id="editPayeeNotes"></textarea>
+    </div>
+
+    <div class="right">
+      <button class="btn" id="payeeModalCancelBtn" type="button">Cancel</button>
+      <button class="btn primary" id="payeeModalSaveBtn" type="button">Save changes</button>
+    </div>
+
+    <div class="help muted" style="margin-top:10px">
+      Tip: changing hands affects cycle length and base pot calculations.
+    </div>
+  </div>
+</div>
+  <!-- TOAST -->
+  <div class="toast" id="toast">
+    <div class="t" id="toastTitle">Saved</div>
+    <div class="m" id="toastMsg">Done.</div>
+  </div>
+</body>
+</html>
