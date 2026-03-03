@@ -231,3 +231,62 @@ button.btn.btn-draw{
 button.btn.btn-draw:hover{
   background: #15803d !important;
 }
+/* Fully paid members - green highlight */
+.paid-complete{
+  background: rgba(22,163,74,0.15);
+}
+
+.paid-complete td{
+  color: #22c55e;
+  font-weight: 600;
+}
+
+/* =========================
+   CYCLE COMPLETED BANNER
+========================= */
+
+.cycle-banner{
+  background: linear-gradient(90deg, #16a34a, #22c55e);
+  border: none;
+  border-radius: 12px;
+  padding: 18px 22px;
+  margin-bottom: 18px;
+  box-shadow: 0 6px 20px rgba(34,197,94,.25);
+  color: white;
+}
+
+.cycle-banner-title{
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: .5px;
+}
+
+.cycle-banner-sub{
+  margin-top: 6px;
+  font-size: 14px;
+  opacity: .95;
+}
+/* Cycle banner layout */
+.cycle-banner-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  flex-wrap:wrap;
+}
+
+.cycle-banner-actions{
+  display:flex;
+  gap:10px;
+}
+
+/* Button inside green banner */
+.cycle-btn{
+  background: rgba(255,255,255,.18);
+  color: white;
+  border: 1px solid rgba(255,255,255,.35);
+}
+
+.cycle-btn:hover{
+  background: rgba(255,255,255,.26);
+}
