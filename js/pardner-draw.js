@@ -1,26 +1,23 @@
 /* js/pardner-draw.js
-   Pardner Draw — v6
-   - Editable hand value + editable draw day
-   - Payee Edit Modal
-   - ✅ requestedDrawDates per hand (array length matches hands)
+   Pardner Draw — v8 (localStorage)
+   ✅ Editable Hand value + Draw day + Cycle start (saved)
+   ✅ Target weekly pot / Remaining funding / Progress bar (dashboard)
+   ✅ Payees can have requested draw dates PER HAND (requestedDrawDates[])
+   ✅ Paid Out Summary table + fully paid rows green
+   ✅ “Cycle Completed” banner (green) + Start New Cycle button
+   ✅ Auto-lock when complete (blocks payments/draws until new cycle)
+   ✅ Keeps payment/draw history by archiving completed cycles into a History “spreadsheet”
+      - Stored in localStorage as state.history[]
+      - Export History CSV button supported if element exists: #exportHistoryCsvBtn
+      - Render History table if element exists: #historyTable (tbody), optional #page-history
 
-   Data model:
-   payee: {
-     id, name, hands,
-     requestedDrawDates: string[], // length = hands, values are "" or "YYYY-MM-DD"
-     notes,
-     hasDrawn, drawDate, drawAmount
-   }
-
-   Backwards compatible:
-   - If older data has requestedDrawDate, it is converted into requestedDrawDates[0].
+   Works with the HTML IDs from your latest full HTML (plus optional History elements).
 */
-
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "pardner_draw_v6";
-  const PAGES = ["dashboard", "payees", "payments", "draws", "weekly", "settings"];
+  const STORAGE_KEY = "pardner_draw_v8";
+  const PAGES = ["dashboard", "payees", "payments", "draws", "weekly", "settings", "history"];
   const $ = (id) => document.getElementById(id);
 
   // -----------------------------
@@ -50,29 +47,13 @@
 
   function addDays(d, n) {
     const x = new Date(d);
-    x.setDate(x.getDate() + n);
     x.setHours(0, 0, 0, 0);
+    x.setDate(x.getDate() + n);
     return x;
   }
 
   function uid(prefix = "id") {
     return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-  }
-
-  function toast(title, msg) {
-    const el = $("toast");
-    if (!el) return;
-    const t = $("toastTitle");
-    const m = $("toastMsg");
-    if (t) t.textContent = title;
-    if (m) m.textContent = msg;
-    el.classList.add("show");
-    setTimeout(() => el.classList.remove("show"), 2400);
-  }
-
-  function dayName(dow) {
-    const map = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-    return map[((Number(dow) % 7) + 7) % 7];
   }
 
   function safeNumber(v, fallback = 0) {
@@ -90,6 +71,42 @@
     return parseISODate(v) ? v : "";
   }
 
+  function dayName(dow) {
+    const map = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    return map[((Number(dow) % 7) + 7) % 7];
+  }
+
+  function toast(title, msg) {
+    const el = $("toast");
+    if (!el) return;
+    const t = $("toastTitle");
+    const m = $("toastMsg");
+    if (t) t.textContent = title;
+    if (m) m.textContent = msg;
+    el.classList.add("show");
+    setTimeout(() => el.classList.remove("show"), 2400);
+  }
+
+  function downloadText(filename, text, mime = "text/plain") {
+    const blob = new Blob([text], { type: mime });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  // CSV helpers
+  function csvEscape(v) {
+    const s = String(v ?? "");
+    if (/[",\n\r]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
+    return s;
+  }
+  function toCSV(rows) {
+    return rows.map((r) => r.map(csvEscape).join(",")).join("\n");
+  }
+
   // -----------------------------
   // State
   // -----------------------------
@@ -99,12 +116,14 @@
         handValue: 50,
         payoutDow: 2, // Tuesday
         cycleStartDate: isoDate(new Date()),
-        nLocked: 0, // compatibility only
+        nLocked: 0,
+        cycleLocked: false,
       },
       payees: [],
       contributions: [],
       draws: [],
       activity: [],
+      history: [], // archived cycles (spreadsheet-like)
     };
   }
 
@@ -118,33 +137,32 @@
         localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
         return s;
       }
+
       const s = JSON.parse(raw);
       if (!s || !s.settings || !Array.isArray(s.payees)) throw new Error("Bad state");
 
       s.contributions = Array.isArray(s.contributions) ? s.contributions : [];
       s.draws = Array.isArray(s.draws) ? s.draws : [];
       s.activity = Array.isArray(s.activity) ? s.activity : [];
+      s.history = Array.isArray(s.history) ? s.history : [];
 
       // settings defaults
       s.settings.handValue = clampInt(s.settings.handValue, 1);
       s.settings.payoutDow = ((clampInt(s.settings.payoutDow, 0) % 7) + 7) % 7;
       s.settings.cycleStartDate = s.settings.cycleStartDate || isoDate(new Date());
       s.settings.nLocked = safeNumber(s.settings.nLocked, 0);
+      s.settings.cycleLocked = !!s.settings.cycleLocked;
 
-      // migrate payees to requestedDrawDates[]
+      // payees migrate requestedDrawDate -> requestedDrawDates[]
       s.payees = s.payees.map((p) => {
         const hands = clampInt(p.hands, 1);
         let arr = [];
 
-        // New format
         if (Array.isArray(p.requestedDrawDates)) {
           arr = p.requestedDrawDates.map(normalizeDateOrBlank);
         } else {
-          // Old format: requestedDrawDate (single)
           arr = [normalizeDateOrBlank(p.requestedDrawDate || "")];
         }
-
-        // Ensure length = hands
         while (arr.length < hands) arr.push("");
         if (arr.length > hands) arr = arr.slice(0, hands);
 
@@ -162,7 +180,7 @@
         };
       });
 
-      // contributions: ensure hands computed
+      // contributions ensure hands computed
       const hv = s.settings.handValue;
       s.contributions = s.contributions.map((c) => {
         const amount = safeNumber(c.amount, 0);
@@ -179,7 +197,7 @@
         };
       });
 
-      // draws: normalize
+      // draws normalize
       s.draws = s.draws.map((d) => ({
         ...d,
         id: d.id || uid("d"),
@@ -188,6 +206,21 @@
         amount: safeNumber(d.amount, 0),
         note: String(d.note || ""),
         createdAt: safeNumber(d.createdAt, Date.now()),
+      }));
+
+      // history normalize minimal
+      s.history = s.history.map((h) => ({
+        id: h.id || uid("h"),
+        title: String(h.title || "Archived cycle"),
+        started: String(h.started || ""),
+        ended: String(h.ended || ""),
+        payoutDow: Number.isFinite(Number(h.payoutDow)) ? Number(h.payoutDow) : s.settings.payoutDow,
+        handValue: clampInt(h.handValue, 1),
+        payeeSnapshot: Array.isArray(h.payeeSnapshot) ? h.payeeSnapshot : [],
+        contributions: Array.isArray(h.contributions) ? h.contributions : [],
+        draws: Array.isArray(h.draws) ? h.draws : [],
+        totals: h.totals || {},
+        createdAt: safeNumber(h.createdAt, Date.now()),
       }));
 
       return s;
@@ -219,12 +252,33 @@
   }
 
   // -----------------------------
-  // Schedule helpers (based on chosen draw day)
+  // Lock / Completion
+  // -----------------------------
+  function totalCommittedHands() {
+    return state.payees.reduce((sum, p) => sum + clampInt(p.hands, 1), 0);
+  }
+  function drawsCompleted() {
+    return state.draws.length;
+  }
+  function drawsRemainingHands() {
+    return Math.max(0, totalCommittedHands() - drawsCompleted());
+  }
+  function isCycleComplete() {
+    return totalCommittedHands() > 0 && drawsRemainingHands() === 0;
+  }
+  function isCycleLocked() {
+    return !!state.settings.cycleLocked;
+  }
+  function setCycleLocked(locked) {
+    state.settings.cycleLocked = !!locked;
+  }
+
+  // -----------------------------
+  // Schedule helpers
   // -----------------------------
   function isPayoutDay(d) {
     return d.getDay() === payoutDow();
   }
-
   function nextPayoutDay(from = new Date()) {
     const d = new Date(from);
     d.setHours(0, 0, 0, 0);
@@ -235,7 +289,6 @@
     d.setDate(d.getDate() + delta);
     return d;
   }
-
   function prevPayoutDay(from = new Date()) {
     const d = new Date(from);
     d.setHours(0, 0, 0, 0);
@@ -245,14 +298,12 @@
     d.setDate(d.getDate() - delta);
     return d;
   }
-
   function thisPayoutDay() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     return isPayoutDay(today) ? today : nextPayoutDay(today);
   }
 
-  // 7-day window ending on payout day
   function weekBoundsForPayoutEnd(endStr) {
     const endDay = parseISODate(endStr);
     if (!endDay) return null;
@@ -264,48 +315,35 @@
   }
 
   // -----------------------------
-  // Cycle math (hands-based)
+  // Cycle math / pots
   // -----------------------------
-  function totalCommittedHands() {
-    return state.payees.reduce((sum, p) => sum + clampInt(p.hands, 1), 0);
-  }
-
   function basePot() {
-    return totalCommittedHands() * handValue();
+    return totalCommittedHands() * handValue(); // ✅ target weekly pot
   }
-
   function totalPaidAllTime() {
     return state.contributions.reduce((sum, c) => sum + safeNumber(c.amount, 0), 0);
   }
-
   function totalHandsPaidAllTime() {
     return totalPaidAllTime() / handValue();
-  }
-
-  function drawsCompleted() {
-    return state.draws.length;
-  }
-
-  function drawsRemainingHands() {
-    return Math.max(0, totalCommittedHands() - drawsCompleted());
   }
 
   function getCycleStartDate() {
     const d = parseISODate(state.settings.cycleStartDate);
     return d || thisPayoutDay();
   }
-
-  function getCycleEndDate() {
+  function getCycleEndDateEstimated() {
+    // estimated end date based purely on hands = weeks
     return addDays(getCycleStartDate(), totalCommittedHands() * 7);
   }
-
-  function getLastPayoutDate() {
+  function getLastPayoutDateEstimated() {
     return addDays(getCycleStartDate(), Math.max(0, (totalCommittedHands() - 1) * 7));
   }
+  function getActualCycleEndDateFromDraws() {
+    if (!state.draws.length) return null;
+    const last = [...state.draws].sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
+    return parseISODate(last?.date) ? last.date : null;
+  }
 
-  // -----------------------------
-  // Payments / pots
-  // -----------------------------
   function validMultipleOfHandValue(amount) {
     const a = safeNumber(amount, NaN);
     const hv = handValue();
@@ -321,7 +359,6 @@
       return d >= b.start && d <= b.end;
     });
   }
-
   function weekPotForEnd(endStr) {
     return contributionsInWeek(endStr).reduce((s, c) => s + safeNumber(c.amount, 0), 0);
   }
@@ -336,7 +373,6 @@
   function payeeHandsPaidOut(payeeId) {
     return state.draws.filter((d) => d.handOwnerPayeeId === payeeId).length;
   }
-
   function payeeHandsRemaining(payeeId) {
     const p = state.payees.find((x) => x.id === payeeId);
     if (!p) return 0;
@@ -351,50 +387,105 @@
 
       const last = state.draws
         .filter((d) => d.handOwnerPayeeId === p.id)
-        .sort((a, b) => (b.date || "").localeCompare(a.date || "") || (safeNumber(b.createdAt, 0) - safeNumber(a.createdAt, 0)))[0];
+        .sort((a, b) => (b.date || "").localeCompare(a.date || "") || safeNumber(b.createdAt, 0) - safeNumber(a.createdAt, 0))[0];
 
       if (last) {
         p.drawDate = last.date;
         p.drawAmount = safeNumber(last.amount, 0);
+      } else {
+        p.drawDate = p.drawDate || "";
+        p.drawAmount = safeNumber(p.drawAmount, 0);
       }
     }
   }
 
-  function estimateFundingRatePayoutsPerWeek() {
-    const handsTotal = totalCommittedHands();
-    if (handsTotal <= 0) return null;
+  // -----------------------------
+  // Funding widgets (in header)
+  // -----------------------------
+  function ensureFundingWidgets() {
+    const host = document.querySelector(".topbar-right") || $("page-dashboard");
+    if (!host) return;
+    if ($("fundingWidget")) return;
 
-    const end0 = prevPayoutDay(new Date());
-    let weeks = 0;
-    let handsSum = 0;
+    const wrap = document.createElement("div");
+    wrap.id = "fundingWidget";
+    wrap.style.display = "flex";
+    wrap.style.flexDirection = "column";
+    wrap.style.gap = "8px";
+    wrap.style.minWidth = "260px";
 
-    for (let i = 0; i < 10 && weeks < 6; i++) {
-      const end = addDays(end0, -7 * i);
-      const endStr = isoDate(end);
-      const pot = weekPotForEnd(endStr);
-      if (pot <= 0) continue;
-      weeks++;
-      handsSum += pot / handValue();
+    const line = document.createElement("div");
+    line.style.display = "flex";
+    line.style.gap = "10px";
+    line.style.flexWrap = "wrap";
+    line.innerHTML = `
+      <span class="pill" id="targetWeeklyPotPill">Target weekly pot: £0</span>
+      <span class="pill warn" id="remainingFundingPill">Remaining funding: £0</span>
+    `;
+
+    const barOuter = document.createElement("div");
+    barOuter.style.border = "1px solid rgba(148,163,184,.18)";
+    barOuter.style.borderRadius = "999px";
+    barOuter.style.height = "12px";
+    barOuter.style.overflow = "hidden";
+    barOuter.style.background = "rgba(2,6,23,.35)";
+
+    const barInner = document.createElement("div");
+    barInner.id = "fundingProgressBar";
+    barInner.style.height = "100%";
+    barInner.style.width = "0%";
+    barInner.style.background = "rgba(56,189,248,.55)";
+    barOuter.appendChild(barInner);
+
+    const caption = document.createElement("div");
+    caption.id = "fundingProgressText";
+    caption.className = "muted";
+    caption.style.fontSize = "12px";
+    caption.textContent = "Progress: —";
+
+    wrap.appendChild(line);
+    wrap.appendChild(barOuter);
+    wrap.appendChild(caption);
+
+    host.appendChild(wrap);
+  }
+
+  function renderFundingWidgets({ weekPot, targetPot }) {
+    ensureFundingWidgets();
+
+    const target = Math.max(0, safeNumber(targetPot, 0));
+    const pot = Math.max(0, safeNumber(weekPot, 0));
+    const remaining = Math.max(0, target - pot);
+    const pct = target > 0 ? Math.min(1, pot / target) : 0;
+
+    const targetEl = $("targetWeeklyPotPill");
+    const remEl = $("remainingFundingPill");
+    const bar = $("fundingProgressBar");
+    const txt = $("fundingProgressText");
+
+    if (targetEl) targetEl.textContent = `Target weekly pot: ${fmtGBP(target)}`;
+    if (remEl) {
+      remEl.className = remaining === 0 ? "pill success" : "pill warn";
+      remEl.textContent = `Remaining funding: ${fmtGBP(remaining)}`;
     }
-    if (weeks === 0) return null;
-
-    const avgHandsPerWeek = handsSum / weeks;
-    const rate = avgHandsPerWeek / handsTotal;
-    return Math.min(1, Math.max(0, rate));
+    if (bar) bar.style.width = `${Math.round(pct * 100)}%`;
+    if (txt) txt.textContent = `Progress: ${Math.round(pct * 100)}% (${fmtGBP(pot)} / ${fmtGBP(target)})`;
   }
 
   // -----------------------------
   // Navigation
   // -----------------------------
   function showPage(page) {
+    const safePage = PAGES.includes(page) ? page : "dashboard";
+
     PAGES.forEach((p) => {
       const el = $("page-" + p);
       if (!el) return;
-      el.style.display = p === page ? "block" : "none";
+      el.style.display = p === safePage ? "block" : "none";
     });
 
     document.querySelectorAll(".nav button[data-page]").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.page === page);
+      btn.classList.toggle("active", btn.dataset.page === safePage);
     });
 
     const payoutName = dayName(payoutDow());
@@ -407,16 +498,17 @@
       draws: ["Record Draw", `Each ${payoutName} pays out ONE hand.`],
       weekly: ["Weekly Summary", `7-day window ending on ${payoutName}.`],
       settings: ["Settings", "Edit hand value, draw day, cycle start; export/import; reset."],
+      history: ["History", "Archived cycles: export to CSV for spreadsheet use."],
     };
 
-    if ($("pageTitle")) $("pageTitle").textContent = map[page]?.[0] || "Pardner Draw";
-    if ($("pageSubtitle")) $("pageSubtitle").textContent = map[page]?.[1] || "";
+    if ($("pageTitle")) $("pageTitle").textContent = map[safePage]?.[0] || "Pardner Draw";
+    if ($("pageSubtitle")) $("pageSubtitle").textContent = map[safePage]?.[1] || "";
 
     renderAll();
   }
 
   // -----------------------------
-  // Payee Edit Modal (multi requested dates)
+  // Payee Edit Modal
   // -----------------------------
   let editingPayeeId = null;
 
@@ -457,9 +549,7 @@
     if (!wrap) return [];
     const inputs = wrap.querySelectorAll("input[type='date'][data-req-index]");
     const arr = [];
-    inputs.forEach((inp) => {
-      arr.push(normalizeDateOrBlank(inp.value));
-    });
+    inputs.forEach((inp) => arr.push(normalizeDateOrBlank(inp.value)));
     return arr;
   }
 
@@ -468,19 +558,16 @@
     if (!p) return;
 
     editingPayeeId = payeeId;
+    $("editPayeeName") && ($("editPayeeName").value = p.name || "");
+    $("editPayeeHands") && ($("editPayeeHands").value = String(clampInt(p.hands, 1)));
+    $("editPayeeNotes") && ($("editPayeeNotes").value = p.notes || "");
 
-    $("editPayeeName").value = p.name || "";
-    $("editPayeeHands").value = String(clampInt(p.hands, 1));
-    $("editPayeeNotes").value = p.notes || "";
-
-    // Build requested dates list to match hands
     buildRequestedDatesInputs(clampInt(p.hands, 1), p.requestedDrawDates);
 
     const m = $("payeeModal");
     if (!m) return;
     m.style.display = "block";
     m.setAttribute("aria-hidden", "false");
-
     setTimeout(() => $("editPayeeName")?.focus(), 0);
   }
 
@@ -494,17 +581,15 @@
 
   function savePayeeModal() {
     if (!editingPayeeId) return;
-
     const p = state.payees.find((x) => x.id === editingPayeeId);
     if (!p) return;
 
-    const name = ($("editPayeeName").value || "").trim();
-    const hands = clampInt($("editPayeeHands").value, 1);
-    const notes = ($("editPayeeNotes").value || "").trim();
+    const name = ($("editPayeeName")?.value || "").trim();
+    const hands = clampInt($("editPayeeHands")?.value, 1);
+    const notes = ($("editPayeeNotes")?.value || "").trim();
 
     if (!name) return toast("Invalid", "Name cannot be blank.");
 
-    // Get requested dates from modal; force length to hands
     let reqArr = readRequestedDatesFromModal().map(normalizeDateOrBlank);
     while (reqArr.length < hands) reqArr.push("");
     if (reqArr.length > hands) reqArr = reqArr.slice(0, hands);
@@ -521,17 +606,120 @@
     toast("Saved", `${name} updated`);
   }
 
-  // When hands changes inside modal, rebuild date inputs to match
   function onModalHandsChange() {
     if (!editingPayeeId) return;
-    const p = state.payees.find((x) => x.id === editingPayeeId);
-    if (!p) return;
-
     const hands = clampInt($("editPayeeHands")?.value, 1);
-
-    // preserve what user already typed
     const current = readRequestedDatesFromModal();
-    buildRequestedDatesInputs(hands, current.length ? current : p.requestedDrawDates);
+    buildRequestedDatesInputs(hands, current);
+  }
+
+  // -----------------------------
+  // Cycle completed banner + lock + start new cycle
+  // -----------------------------
+  function renderCycleCompletedBanner() {
+    const banner = $("cycleCompleteBanner");
+    const dateEl = $("cycleCompleteDate");
+    if (!banner || !dateEl) return;
+
+    const complete = isCycleComplete();
+
+    // auto-lock when complete
+    if (complete && !isCycleLocked()) {
+      setCycleLocked(true);
+      logActivity("Cycle", "Cycle completed → auto-locked");
+      saveState();
+    }
+
+    if (!complete) {
+      banner.style.display = "none";
+      return;
+    }
+
+    banner.style.display = "block";
+    const actualEnd = getActualCycleEndDateFromDraws();
+    dateEl.textContent = actualEnd || isoDate(getCycleEndDateEstimated());
+  }
+
+  function applyLockUI() {
+    const locked = isCycleLocked();
+    const idsToDisable = [
+      "quickAddPayment",
+      "quickRecordDraw",
+      "savePaymentBtn",
+      "saveDrawBtn",
+      "dashRecordDraw",
+      "paymentPayee",
+      "paymentDate",
+      "paymentAmount",
+      "paymentNote",
+      "drawDate",
+      "drawPayee",
+      "drawAmount",
+      "drawNote",
+      "dashRecipient",
+      "dashDrawAmount",
+    ];
+
+    idsToDisable.forEach((id) => {
+      const el = $(id);
+      if (!el) return;
+      el.disabled = locked;
+      el.style.opacity = locked ? "0.6" : "1";
+      el.style.pointerEvents = locked ? "none" : "auto";
+      el.title = locked ? "Cycle is completed and locked. Start a new cycle to continue." : "";
+    });
+  }
+
+  function archiveCurrentCycleAndReset() {
+    // Build an archive entry (history spreadsheet)
+    const hv = handValue();
+    const dow = payoutDow();
+
+    // cycle start/end
+    const started = state.settings.cycleStartDate || "";
+    const ended = getActualCycleEndDateFromDraws() || isoDate(getCycleEndDateEstimated());
+
+    // snapshot payees (so history doesn’t change if you edit roster later)
+    const payeeSnapshot = state.payees.map((p) => ({
+      id: p.id,
+      name: p.name,
+      hands: clampInt(p.hands, 1),
+      notes: p.notes || "",
+      requestedDrawDates: Array.isArray(p.requestedDrawDates) ? p.requestedDrawDates.slice() : [],
+    }));
+
+    // totals
+    const totalContrib = state.contributions.reduce((s, c) => s + safeNumber(c.amount, 0), 0);
+    const totalDraws = state.draws.reduce((s, d) => s + safeNumber(d.amount, 0), 0);
+
+    const entry = {
+      id: uid("h"),
+      title: `Cycle ${started || "?"} → ${ended || "?"}`,
+      started,
+      ended,
+      payoutDow: dow,
+      handValue: hv,
+      payeeSnapshot,
+      contributions: state.contributions.map((c) => ({ ...c })), // keep full detail
+      draws: state.draws.map((d) => ({ ...d })),
+      totals: {
+        committedHands: totalCommittedHands(),
+        totalContributions: totalContrib,
+        totalDraws: totalDraws,
+      },
+      createdAt: Date.now(),
+    };
+
+    state.history.unshift(entry);
+
+    // Reset current cycle flow (KEEP payees roster)
+    state.contributions = [];
+    state.draws = [];
+    state.settings.cycleStartDate = isoDate(thisPayoutDay());
+    setCycleLocked(false);
+
+    logActivity("Cycle", `New cycle started (${state.settings.cycleStartDate}); archived previous cycle`);
+    saveState();
   }
 
   // -----------------------------
@@ -544,39 +732,42 @@
     const payoutName = dayName(payoutDow());
 
     const handsTotal = totalCommittedHands();
-    const base = basePot();
-
+    const target = basePot(); // target weekly pot
     const nextPay = thisPayoutDay();
     const nextPayStr = isoDate(nextPay);
     const weekPot = weekPotForEnd(nextPayStr);
 
-    if ($("kpiTotalHands")) $("kpiTotalHands").textContent =
-      totalHandsPaidAllTime().toLocaleString("en-GB", { maximumFractionDigits: 0 });
-    if ($("kpiTotalMoney")) $("kpiTotalMoney").textContent = `${fmtGBP(totalPaidAllTime())} total`;
-    if ($("kpiN")) $("kpiN").textContent = String(handsTotal);
+    // KPIs
+    $("kpiTotalHands") && ($("kpiTotalHands").textContent = totalHandsPaidAllTime().toLocaleString("en-GB", { maximumFractionDigits: 0 }));
+    $("kpiTotalMoney") && ($("kpiTotalMoney").textContent = `${fmtGBP(totalPaidAllTime())} total`);
+    $("kpiN") && ($("kpiN").textContent = String(handsTotal));
 
     const funded = handsTotal > 0 ? Math.floor(totalHandsPaidAllTime() / handsTotal) : 0;
-    if ($("kpiFundedDraws")) $("kpiFundedDraws").textContent = String(funded);
-    if ($("kpiFundedSub")) $("kpiFundedSub").textContent = `${funded} / ${handsTotal || 0}`;
+    $("kpiFundedDraws") && ($("kpiFundedDraws").textContent = String(funded));
+    $("kpiFundedSub") && ($("kpiFundedSub").textContent = `${funded} / ${handsTotal || 0}`);
 
-    if ($("kpiCompletedDraws")) $("kpiCompletedDraws").textContent = String(drawsCompleted());
-    if ($("kpiRemainingSub")) $("kpiRemainingSub").textContent = `Remaining: ${drawsRemainingHands()}`;
-    if ($("kpiAvailableDraws")) $("kpiAvailableDraws").textContent = String(Math.max(0, funded - drawsCompleted()));
+    $("kpiCompletedDraws") && ($("kpiCompletedDraws").textContent = String(drawsCompleted()));
+    $("kpiRemainingSub") && ($("kpiRemainingSub").textContent = `Remaining: ${drawsRemainingHands()}`);
+    $("kpiAvailableDraws") && ($("kpiAvailableDraws").textContent = String(Math.max(0, funded - drawsCompleted())));
 
+    // Header pills
     if ($("thisTuesdayPill")) {
       $("thisTuesdayPill").textContent =
         `This ${payoutName}: ${nextPay.toLocaleDateString("en-GB", { weekday: "short", year: "numeric", month: "short", day: "2-digit" })}`;
     }
+    $("potPill") && ($("potPill").textContent = `This week’s pot: ${fmtGBP(weekPot)}`);
+    $("basePotPill") && ($("basePotPill").textContent = `Base/Target (hands×£${hv}): ${fmtGBP(target)}`);
 
-    if ($("potPill")) $("potPill").textContent = `This week’s pot: ${fmtGBP(weekPot)}`;
-    if ($("basePotPill")) $("basePotPill").textContent = `Base pot (hands×£${hv}): ${fmtGBP(base)}`;
+    // Funding widgets
+    renderFundingWidgets({ weekPot, targetPot: target });
 
+    // Funding pill status
     const fundingPill = $("fundingPill");
     if (fundingPill) {
       if (handsTotal <= 0) {
         fundingPill.className = "pill danger";
         fundingPill.textContent = "No hands set";
-      } else if (weekPot >= base && base > 0) {
+      } else if (weekPot >= target && target > 0) {
         fundingPill.className = "pill success";
         fundingPill.textContent = "Funded for this payout ✅";
       } else {
@@ -585,16 +776,15 @@
       }
     }
 
+    // Cycle date pills
     const start = getCycleStartDate();
-    const last = getLastPayoutDate();
-    const end = getCycleEndDate();
-    if ($("cycleStartPill")) $("cycleStartPill").textContent = `Cycle start: ${isoDate(start)}`;
-    if ($("lastPayoutPill")) $("lastPayoutPill").textContent = `Last payout: ${isoDate(last)}`;
-    if ($("cycleEndPill")) $("cycleEndPill").textContent = `Cycle end: ${isoDate(end)}`;
+    const last = getLastPayoutDateEstimated();
+    const endEst = getCycleEndDateEstimated();
+    $("cycleStartPill") && ($("cycleStartPill").textContent = `Cycle start: ${isoDate(start)}`);
+    $("lastPayoutPill") && ($("lastPayoutPill").textContent = `Last payout: ${isoDate(last)}`);
+    $("cycleEndPill") && ($("cycleEndPill").textContent = `Cycle end: ${isoDate(endEst)}`);
 
-    const rate = estimateFundingRatePayoutsPerWeek();
-    if ($("ratePill")) $("ratePill").textContent = rate == null ? "Funding rate: —" : `Funding rate: ${rate.toFixed(2)} payouts/week`;
-
+    // Quick draw selector
     const sel = $("dashRecipient");
     if (sel) {
       const list = state.payees
@@ -606,10 +796,10 @@
     }
 
     if ($("dashDrawAmount") && !$("dashDrawAmount").value) {
-      $("dashDrawAmount").value = String(weekPot > 0 ? weekPot : base);
+      $("dashDrawAmount").value = String(weekPot > 0 ? weekPot : target);
     }
 
-    // Not drawn table: show next requested date if any
+    // Not fully paid out table
     const notDrawnTable = $("notDrawnTable");
     if (notDrawnTable) {
       const rows = state.payees
@@ -617,38 +807,41 @@
         .sort((a, b) => a.name.localeCompare(b.name));
 
       notDrawnTable.innerHTML =
-        rows
-          .map((p) => {
-            const t = payeeTotals(p.id);
-            const committed = clampInt(p.hands, 1);
-            const left = payeeHandsRemaining(p.id);
+        rows.map((p) => {
+          const t = payeeTotals(p.id);
+          const committed = clampInt(p.hands, 1);
+          const left = payeeHandsRemaining(p.id);
 
-            const reqs = Array.isArray(p.requestedDrawDates) ? p.requestedDrawDates.filter(Boolean) : [];
-            const nextReq = reqs.length ? reqs.slice().sort()[0] : "";
+          const reqs = Array.isArray(p.requestedDrawDates) ? p.requestedDrawDates.filter(Boolean) : [];
+          const nextReq = reqs.length ? reqs.slice().sort()[0] : "";
 
-            return `<tr>
-              <td><strong>${escapeHtml(p.name)}</strong></td>
-              <td class="muted">${nextReq ? escapeHtml(nextReq) : "—"}</td>
-              <td class="mono">${t.handsPaid.toLocaleString("en-GB", { maximumFractionDigits: 0 })}</td>
-              <td>${fmtGBP(t.paid)}</td>
-              <td class="muted">${(p.notes || "").trim() ? `📝 (${committed} hands, left ${left})` : `(${committed} hands, left ${left})`}</td>
-            </tr>`;
-          })
-          .join("") || `<tr><td colspan="5" class="muted">Everyone has been paid out 🎉</td></tr>`;
+          return `<tr>
+            <td><strong>${escapeHtml(p.name)}</strong></td>
+            <td class="muted">${nextReq ? escapeHtml(nextReq) : "—"}</td>
+            <td class="mono">${t.handsPaid.toLocaleString("en-GB", { maximumFractionDigits: 0 })}</td>
+            <td>${fmtGBP(t.paid)}</td>
+            <td class="muted">${(p.notes || "").trim() ? `📝 (${committed} hands, left ${left})` : `(${committed} hands, left ${left})`}</td>
+          </tr>`;
+        }).join("") || `<tr><td colspan="5" class="muted">Everyone has been paid out 🎉</td></tr>`;
     }
 
+    // Paid Out Summary (if exists)
+    renderPaidOutSummary();
+
+    // Activity (if exists)
     const activityTable = $("activityTable");
     if (activityTable) {
       const rows = [...state.activity].sort((a, b) => safeNumber(b.at, 0) - safeNumber(a.at, 0)).slice(0, 25);
       activityTable.innerHTML =
-        rows
-          .map((a) => `<tr>
-            <td class="muted">${new Date(a.at).toLocaleString("en-GB")}</td>
-            <td><span class="pill">${escapeHtml(a.type)}</span></td>
-            <td>${escapeHtml(a.details)}</td>
-          </tr>`)
-          .join("") || `<tr><td colspan="3" class="muted">No activity yet.</td></tr>`;
+        rows.map((a) => `<tr>
+          <td class="muted">${new Date(a.at).toLocaleString("en-GB")}</td>
+          <td><span class="pill">${escapeHtml(a.type)}</span></td>
+          <td>${escapeHtml(a.details)}</td>
+        </tr>`).join("") || `<tr><td colspan="3" class="muted">No activity yet.</td></tr>`;
     }
+
+    // Cycle completed banner
+    renderCycleCompletedBanner();
   }
 
   function populatePayeeSelects() {
@@ -657,9 +850,7 @@
     const paymentPayee = $("paymentPayee");
     if (paymentPayee) {
       paymentPayee.innerHTML =
-        state.payees
-          .slice()
-          .sort((a, b) => a.name.localeCompare(b.name))
+        state.payees.slice().sort((a, b) => a.name.localeCompare(b.name))
           .map((p) => `<option value="${p.id}">${escapeHtml(p.name)} (${clampInt(p.hands, 1)} hands)</option>`)
           .join("") || `<option value="">No payees</option>`;
     }
@@ -683,7 +874,6 @@
 
   function renderPayees() {
     refreshPayeeDrawFlags();
-
     const payeesTable = $("payeesTable");
     if (!payeesTable) return;
 
@@ -698,37 +888,35 @@
     rows.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 
     payeesTable.innerHTML =
-      rows
-        .map((p) => {
-          const t = payeeTotals(p.id);
-          const committed = clampInt(p.hands, 1);
-          const left = payeeHandsRemaining(p.id);
+      rows.map((p) => {
+        const t = payeeTotals(p.id);
+        const committed = clampInt(p.hands, 1);
+        const left = payeeHandsRemaining(p.id);
 
-          const reqs = Array.isArray(p.requestedDrawDates) ? p.requestedDrawDates.filter(Boolean) : [];
-          const reqText = reqs.length ? reqs.slice().sort().join(", ") : "—";
+        const reqs = Array.isArray(p.requestedDrawDates) ? p.requestedDrawDates.filter(Boolean) : [];
+        const reqText = reqs.length ? reqs.slice().sort().join(", ") : "—";
 
-          const trClass = p.hasDrawn ? "drawn" : "";
-          const status = p.hasDrawn ? `<span class="pill success">Paid out</span>` : `<span class="pill">Pending</span>`;
+        const trClass = p.hasDrawn ? "drawn" : "";
+        const status = p.hasDrawn ? `<span class="pill success">Paid out</span>` : `<span class="pill">Pending</span>`;
 
-          return `<tr class="${trClass}">
-            <td>
-              <strong>${escapeHtml(p.name)}</strong>
-              <div class="help">${committed} hands • left ${left}</div>
-            </td>
-            <td>${status}</td>
-            <td class="muted" title="${escapeHtml(reqText)}">${escapeHtml(reqText)}</td>
-            <td class="muted">${p.drawDate ? escapeHtml(p.drawDate) : "—"}</td>
-            <td class="mono">${t.handsPaid.toLocaleString("en-GB", { maximumFractionDigits: 0 })}</td>
-            <td>${fmtGBP(t.paid)}</td>
-            <td class="muted">${(p.notes || "").trim() ? "📝" : "—"}</td>
-            <td>
-              <button class="btn" data-act="pay" data-id="${p.id}">Add payment</button>
-              <button class="btn" data-act="edit" data-id="${p.id}">Edit</button>
-              <button class="btn danger" data-act="del" data-id="${p.id}">Delete</button>
-            </td>
-          </tr>`;
-        })
-        .join("") || `<tr><td colspan="8" class="muted">No payees found.</td></tr>`;
+        return `<tr class="${trClass}">
+          <td>
+            <strong>${escapeHtml(p.name)}</strong>
+            <div class="help">${committed} hands • left ${left}</div>
+          </td>
+          <td>${status}</td>
+          <td class="muted" title="${escapeHtml(reqText)}">${escapeHtml(reqText)}</td>
+          <td class="muted">${p.drawDate ? escapeHtml(p.drawDate) : "—"}</td>
+          <td class="mono">${t.handsPaid.toLocaleString("en-GB", { maximumFractionDigits: 0 })}</td>
+          <td>${fmtGBP(t.paid)}</td>
+          <td class="muted">${(p.notes || "").trim() ? "📝" : "—"}</td>
+          <td>
+            <button class="btn" data-act="pay" data-id="${p.id}" type="button">Add payment</button>
+            <button class="btn" data-act="edit" data-id="${p.id}" type="button">Edit</button>
+            <button class="btn danger" data-act="del" data-id="${p.id}" type="button">Delete</button>
+          </td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="8" class="muted">No payees found.</td></tr>`;
 
     payeesTable.querySelectorAll("button[data-act]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -739,7 +927,7 @@
 
         if (act === "pay") {
           showPage("payments");
-          if ($("paymentPayee")) $("paymentPayee").value = id;
+          $("paymentPayee") && ($("paymentPayee").value = id);
           return;
         }
         if (act === "edit") {
@@ -774,7 +962,7 @@
   }
 
   function renderPayments() {
-    if ($("paymentDate") && !$("paymentDate").value) $("paymentDate").value = isoDate(new Date());
+    $("paymentDate") && !$("paymentDate").value && ($("paymentDate").value = isoDate(new Date()));
     updateHandsHelp();
     populatePayeeSelects();
 
@@ -782,29 +970,27 @@
     if (!paymentsTable) return;
 
     const rows = [...state.contributions]
-      .sort((a, b) => (b.date || "").localeCompare(a.date || "") || (safeNumber(b.createdAt, 0) - safeNumber(a.createdAt, 0)))
+      .sort((a, b) => (b.date || "").localeCompare(a.date || "") || safeNumber(b.createdAt, 0) - safeNumber(a.createdAt, 0))
       .slice(0, 80);
 
     paymentsTable.innerHTML =
-      rows
-        .map((c) => {
-          const p = state.payees.find((x) => x.id === c.payeeId);
-          return `<tr>
-            <td class="muted">${escapeHtml(c.date)}</td>
-            <td>${escapeHtml(p ? p.name : "Unknown")}</td>
-            <td>${fmtGBP(c.amount)}</td>
-            <td class="mono">${safeNumber(c.hands, 0).toLocaleString("en-GB", { maximumFractionDigits: 0 })}</td>
-            <td class="muted">${escapeHtml(c.note || "")}</td>
-          </tr>`;
-        })
-        .join("") || `<tr><td colspan="5" class="muted">No payments yet.</td></tr>`;
+      rows.map((c) => {
+        const p = state.payees.find((x) => x.id === c.payeeId);
+        return `<tr>
+          <td class="muted">${escapeHtml(c.date)}</td>
+          <td>${escapeHtml(p ? p.name : "Unknown")}</td>
+          <td>${fmtGBP(c.amount)}</td>
+          <td class="mono">${safeNumber(c.hands, 0).toLocaleString("en-GB", { maximumFractionDigits: 0 })}</td>
+          <td class="muted">${escapeHtml(c.note || "")}</td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="5" class="muted">No payments yet.</td></tr>`;
   }
 
   function renderDraws() {
     refreshPayeeDrawFlags();
     populatePayeeSelects();
 
-    if ($("drawDate") && !$("drawDate").value) $("drawDate").value = isoDate(thisPayoutDay());
+    $("drawDate") && !$("drawDate").value && ($("drawDate").value = isoDate(thisPayoutDay()));
 
     const dateStr = $("drawDate")?.value;
     if ($("drawAmount") && dateStr && !$("drawAmount").value) {
@@ -816,26 +1002,23 @@
     if (!drawsTable) return;
 
     const rows = [...state.draws]
-      .sort((a, b) => (b.date || "").localeCompare(a.date || "") || (safeNumber(b.createdAt, 0) - safeNumber(a.createdAt, 0)))
+      .sort((a, b) => (b.date || "").localeCompare(a.date || "") || safeNumber(b.createdAt, 0) - safeNumber(a.createdAt, 0))
       .slice(0, 160);
 
     drawsTable.innerHTML =
-      rows
-        .map((d) => {
-          const p = state.payees.find((x) => x.id === d.handOwnerPayeeId);
-          return `<tr>
-            <td class="muted">${escapeHtml(d.date)}</td>
-            <td><strong>${escapeHtml(p ? p.name : "Unknown")}</strong></td>
-            <td>${fmtGBP(d.amount)}</td>
-            <td class="muted">${escapeHtml(d.note || "")}</td>
-          </tr>`;
-        })
-        .join("") || `<tr><td colspan="4" class="muted">No draws yet.</td></tr>`;
+      rows.map((d) => {
+        const p = state.payees.find((x) => x.id === d.handOwnerPayeeId);
+        return `<tr>
+          <td class="muted">${escapeHtml(d.date)}</td>
+          <td><strong>${escapeHtml(p ? p.name : "Unknown")}</strong></td>
+          <td>${fmtGBP(d.amount)}</td>
+          <td class="muted">${escapeHtml(d.note || "")}</td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="4" class="muted">No draws yet.</td></tr>`;
   }
 
   function renderWeekly() {
-    if ($("weekEnding") && !$("weekEnding").value) $("weekEnding").value = isoDate(thisPayoutDay());
-
+    $("weekEnding") && !$("weekEnding").value && ($("weekEnding").value = isoDate(thisPayoutDay()));
     const endStr = $("weekEnding")?.value;
     if (!endStr) return;
 
@@ -848,23 +1031,23 @@
     const funded = handsTotal > 0 && totalWeekHands >= handsTotal;
     const carry = handsTotal > 0 ? Math.max(0, totalWeekHands - handsTotal) : 0;
 
-    if ($("wkTotalMoney")) $("wkTotalMoney").textContent = fmtGBP(totalWeekPaid);
-    if ($("wkTotalHands")) $("wkTotalHands").textContent = totalWeekHands.toLocaleString("en-GB", { maximumFractionDigits: 0 });
-    if ($("wkCarryHands")) $("wkCarryHands").textContent = carry.toLocaleString("en-GB", { maximumFractionDigits: 0 });
+    $("wkTotalMoney") && ($("wkTotalMoney").textContent = fmtGBP(totalWeekPaid));
+    $("wkTotalHands") && ($("wkTotalHands").textContent = totalWeekHands.toLocaleString("en-GB", { maximumFractionDigits: 0 }));
+    $("wkCarryHands") && ($("wkCarryHands").textContent = carry.toLocaleString("en-GB", { maximumFractionDigits: 0 }));
 
     if ($("wkFundingText")) {
       $("wkFundingText").textContent =
         handsTotal > 0 ? (funded ? `Funded ✅ (need ${handsTotal} hands)` : `Not funded ⚠️ (need ${handsTotal} hands)`) : "Add payees to calculate hands";
     }
-    if ($("wkHandsText")) $("wkHandsText").textContent = handsTotal > 0 ? `${totalWeekHands.toFixed(0)} / ${handsTotal} hands` : "—";
-    if ($("wkCarryText")) $("wkCarryText").textContent = `Hands above total`;
+    $("wkHandsText") && ($("wkHandsText").textContent = handsTotal > 0 ? `${totalWeekHands.toFixed(0)} / ${handsTotal} hands` : "—");
+    $("wkCarryText") && ($("wkCarryText").textContent = `Hands above total`);
 
     const byPayee = new Map();
     for (const c of weekCons) {
       const cur = byPayee.get(c.payeeId) || { amount: 0, dates: new Set(), notes: [] };
       cur.amount += safeNumber(c.amount, 0);
-      if (c.date) cur.dates.add(c.date);
-      if ((c.note || "").trim()) cur.notes.push(String(c.note).trim());
+      c.date && cur.dates.add(c.date);
+      (c.note || "").trim() && cur.notes.push(String(c.note).trim());
       byPayee.set(c.payeeId, cur);
     }
 
@@ -894,10 +1077,150 @@
   }
 
   function renderSettings() {
-    if ($("setHandValue")) $("setHandValue").value = String(handValue());
-    if ($("setDrawDay")) $("setDrawDay").value = String(payoutDow());
-    if ($("setCycleStart")) $("setCycleStart").value = state.settings.cycleStartDate || "";
-    if ($("setNLocked")) $("setNLocked").value = String(safeNumber(state.settings.nLocked, 0));
+    $("setHandValue") && ($("setHandValue").value = String(handValue()));
+    $("setDrawDay") && ($("setDrawDay").value = String(payoutDow()));
+    $("setCycleStart") && ($("setCycleStart").value = state.settings.cycleStartDate || "");
+    $("setNLocked") && ($("setNLocked").value = String(safeNumber(state.settings.nLocked, 0)));
+  }
+
+  // Paid Out Summary (Dashboard optional section)
+  function renderPaidOutSummary() {
+    const table = $("paidOutTable");
+    if (!table) return;
+
+    const rows = state.payees
+      .map((p) => {
+        const paidHands = payeeHandsPaidOut(p.id);
+        if (paidHands === 0) return null;
+
+        const totalPaid = state.draws
+          .filter((d) => d.handOwnerPayeeId === p.id)
+          .reduce((sum, d) => sum + safeNumber(d.amount, 0), 0);
+
+        const lastDraw = state.draws
+          .filter((d) => d.handOwnerPayeeId === p.id)
+          .sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
+
+        const fullyPaid = payeeHandsRemaining(p.id) === 0;
+
+        return `<tr class="${fullyPaid ? "paid-complete" : ""}">
+          <td><strong>${escapeHtml(p.name)}</strong></td>
+          <td class="mono">${paidHands}</td>
+          <td>${fmtGBP(totalPaid)}</td>
+          <td class="muted">${lastDraw ? escapeHtml(lastDraw.date) : "—"}</td>
+        </tr>`;
+      })
+      .filter(Boolean);
+
+    table.innerHTML = rows.join("") || `<tr><td colspan="4" class="muted">No payouts recorded yet.</td></tr>`;
+  }
+
+  // History “spreadsheet” (optional page/section)
+  function renderHistory() {
+    const tbody = $("historyTable");
+    if (!tbody) return;
+
+    const rows = state.history
+      .slice()
+      .sort((a, b) => safeNumber(b.createdAt, 0) - safeNumber(a.createdAt, 0))
+      .map((h) => {
+        const title = h.title || `Cycle ${h.started || "?"} → ${h.ended || "?"}`;
+        const committedHands = safeNumber(h.totals?.committedHands, 0);
+        const totalContrib = safeNumber(h.totals?.totalContributions, 0);
+        const totalDraws = safeNumber(h.totals?.totalDraws, 0);
+        return `<tr>
+          <td><strong>${escapeHtml(title)}</strong><div class="help">Draw day: ${escapeHtml(dayName(h.payoutDow))} • Hand: £${escapeHtml(h.handValue)}</div></td>
+          <td class="muted">${escapeHtml(h.started || "—")}</td>
+          <td class="muted">${escapeHtml(h.ended || "—")}</td>
+          <td class="mono">${committedHands}</td>
+          <td>${fmtGBP(totalContrib)}</td>
+          <td>${fmtGBP(totalDraws)}</td>
+          <td>
+            <button class="btn" type="button" data-hist="csv" data-id="${escapeHtml(h.id)}">Export CSV</button>
+          </td>
+        </tr>`;
+      });
+
+    tbody.innerHTML = rows.join("") || `<tr><td colspan="7" class="muted">No archived cycles yet.</td></tr>`;
+
+    // row export buttons
+    tbody.querySelectorAll("button[data-hist='csv']").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.id;
+        exportSingleCycleCsv(id);
+      });
+    });
+  }
+
+  function exportSingleCycleCsv(historyId) {
+    const h = state.history.find((x) => x.id === historyId);
+    if (!h) return toast("Not found", "History item not found.");
+
+    // Create a “spreadsheet” CSV with contributions + draws in one file (two sections)
+    const payeeNameById = new Map((h.payeeSnapshot || []).map((p) => [p.id, p.name]));
+
+    const lines = [];
+    lines.push(`Cycle,${csvEscape(h.title || "")}`);
+    lines.push(`Started,${csvEscape(h.started || "")}`);
+    lines.push(`Ended,${csvEscape(h.ended || "")}`);
+    lines.push(`DrawDay,${csvEscape(dayName(h.payoutDow))}`);
+    lines.push(`HandValue,${csvEscape(h.handValue)}`);
+    lines.push("");
+
+    // Contributions
+    lines.push("Contributions");
+    lines.push(toCSV([["Date", "Payee", "Amount", "Hands", "Note"]]));
+    const contribRows = (h.contributions || [])
+      .slice()
+      .sort((a, b) => (a.date || "").localeCompare(b.date || ""))
+      .map((c) => [
+        c.date || "",
+        payeeNameById.get(c.payeeId) || "Unknown",
+        c.amount ?? "",
+        c.hands ?? "",
+        c.note || "",
+      ]);
+    lines.push(toCSV(contribRows));
+    lines.push("");
+
+    // Draws
+    lines.push("Draws");
+    lines.push(toCSV([["Date", "Recipient", "Amount", "Note"]]));
+    const drawRows = (h.draws || [])
+      .slice()
+      .sort((a, b) => (a.date || "").localeCompare(b.date || ""))
+      .map((d) => [
+        d.date || "",
+        payeeNameById.get(d.handOwnerPayeeId) || "Unknown",
+        d.amount ?? "",
+        d.note || "",
+      ]);
+    lines.push(toCSV(drawRows));
+
+    const filenameSafe = (h.title || "cycle").replace(/[^\w\- ]+/g, "").replace(/\s+/g, "_").slice(0, 60);
+    downloadText(`${filenameSafe}_history.csv`, lines.join("\n"), "text/csv");
+    toast("Exported", "Downloaded cycle history CSV.");
+  }
+
+  function exportAllHistoryCsv() {
+    // One CSV “index” of cycles
+    const rows = [
+      ["Title", "Started", "Ended", "Draw Day", "Hand Value", "Committed Hands", "Total Contributions", "Total Draws"],
+    ];
+    for (const h of state.history) {
+      rows.push([
+        h.title || "",
+        h.started || "",
+        h.ended || "",
+        dayName(h.payoutDow),
+        String(h.handValue),
+        String(safeNumber(h.totals?.committedHands, 0)),
+        String(safeNumber(h.totals?.totalContributions, 0)),
+        String(safeNumber(h.totals?.totalDraws, 0)),
+      ]);
+    }
+    downloadText(`pardner-draw-history-index-${isoDate(new Date())}.csv`, toCSV(rows), "text/csv");
+    toast("Exported", "Downloaded history index CSV.");
   }
 
   function renderAll() {
@@ -907,13 +1230,15 @@
     renderDraws();
     renderWeekly();
     renderSettings();
+    renderHistory();
+    applyLockUI();
   }
 
   // -----------------------------
   // Handlers
   // -----------------------------
   function attachHandlers() {
-    // NAV (capture)
+    // NAV
     document.addEventListener(
       "click",
       (e) => {
@@ -931,7 +1256,7 @@
     $("payeeSearch")?.addEventListener("input", renderPayees);
     $("payeeFilter")?.addEventListener("change", renderPayees);
 
-    // Add payee: initial requestedDrawDates[] created blank to match hands
+    // Add Payee
     $("addPayeeBtn")?.addEventListener("click", () => {
       const name = ($("payeeName")?.value || "").trim();
       const hands = clampInt($("payeeHands")?.value, 1);
@@ -954,10 +1279,10 @@
         createdAt: Date.now(),
       });
 
-      if ($("payeeName")) $("payeeName").value = "";
-      if ($("payeeHands")) $("payeeHands").value = "1";
-      if ($("payeeReqDate")) $("payeeReqDate").value = "";
-      if ($("payeeNotes")) $("payeeNotes").value = "";
+      $("payeeName") && ($("payeeName").value = "");
+      $("payeeHands") && ($("payeeHands").value = "1");
+      $("payeeReqDate") && ($("payeeReqDate").value = "");
+      $("payeeNotes") && ($("payeeNotes").value = "");
 
       logActivity("Payee added", `${name} added (${hands} hands)`);
       saveState();
@@ -965,9 +1290,12 @@
       toast("Added", `${name} (${hands} hands)`);
     });
 
+    // Payments
     $("paymentAmount")?.addEventListener("input", updateHandsHelp);
 
     $("savePaymentBtn")?.addEventListener("click", () => {
+      if (isCycleLocked()) return toast("Locked", "Cycle is completed and locked. Start a new cycle to continue.");
+
       const payeeId = $("paymentPayee")?.value || "";
       const date = normalizeDateOrBlank($("paymentDate")?.value || "");
       const amount = safeNumber($("paymentAmount")?.value, 0);
@@ -993,8 +1321,8 @@
       const p = state.payees.find((x) => x.id === payeeId);
       logActivity("Payment", `${p ? p.name : "Payee"} paid ${fmtGBP(amount)} (${hands} hands)`);
 
-      if ($("paymentAmount")) $("paymentAmount").value = "";
-      if ($("paymentNote")) $("paymentNote").value = "";
+      $("paymentAmount") && ($("paymentAmount").value = "");
+      $("paymentNote") && ($("paymentNote").value = "");
       updateHandsHelp();
 
       saveState();
@@ -1002,7 +1330,10 @@
       toast("Saved", `${p ? p.name : "Payee"} • ${fmtGBP(amount)} • ${hands} hands`);
     });
 
+    // Draws
     $("saveDrawBtn")?.addEventListener("click", () => {
+      if (isCycleLocked()) return toast("Locked", "Cycle is completed and locked. Start a new cycle to continue.");
+
       const date = normalizeDateOrBlank($("drawDate")?.value || "");
       const payeeId = $("drawPayee")?.value || "";
       const amount = safeNumber($("drawAmount")?.value, 0);
@@ -1026,14 +1357,17 @@
       });
 
       logActivity("Payout", `${p.name} paid 1 hand on ${date} (${fmtGBP(amount)})`);
-      if ($("drawNote")) $("drawNote").value = "";
+      $("drawNote") && ($("drawNote").value = "");
 
       saveState();
       renderAll();
       toast("Recorded", `${p.name} • ${fmtGBP(amount)} • ${date}`);
     });
 
+    // Dashboard quick draw
     $("dashRecordDraw")?.addEventListener("click", () => {
+      if (isCycleLocked()) return toast("Locked", "Cycle is completed and locked. Start a new cycle to continue.");
+
       const payeeId = $("dashRecipient")?.value || "";
       const amount = safeNumber($("dashDrawAmount")?.value, 0);
       const date = isoDate(thisPayoutDay());
@@ -1041,61 +1375,61 @@
       if (!payeeId) return toast("Missing", "No available recipients.");
       if (!validMultipleOfHandValue(amount)) return toast("Invalid", `Must be a multiple of £${handValue()}.`);
 
-      if ($("drawDate")) $("drawDate").value = date;
-      if ($("drawPayee")) $("drawPayee").value = payeeId;
-      if ($("drawAmount")) $("drawAmount").value = String(amount);
-      if ($("drawNote")) $("drawNote").value = "Recorded from Dashboard";
+      $("drawDate") && ($("drawDate").value = date);
+      $("drawPayee") && ($("drawPayee").value = payeeId);
+      $("drawAmount") && ($("drawAmount").value = String(amount));
+      $("drawNote") && ($("drawNote").value = "Recorded from Dashboard");
 
       showPage("draws");
       $("saveDrawBtn")?.click();
     });
 
+    // Weekly navigation
     $("refreshWeekBtn")?.addEventListener("click", renderWeekly);
     $("weekEnding")?.addEventListener("change", renderWeekly);
 
     $("prevWeekBtn")?.addEventListener("click", () => {
       const cur = parseISODate($("weekEnding")?.value);
       if (!cur) return;
-      $("weekEnding").value = isoDate(addDays(cur, -7));
+      $("weekEnding") && ($("weekEnding").value = isoDate(addDays(cur, -7)));
       renderWeekly();
     });
 
     $("nextWeekBtn")?.addEventListener("click", () => {
       const cur = parseISODate($("weekEnding")?.value);
       if (!cur) return;
-      $("weekEnding").value = isoDate(addDays(cur, 7));
+      $("weekEnding") && ($("weekEnding").value = isoDate(addDays(cur, 7)));
       renderWeekly();
     });
 
+    // Save Settings
     $("saveSettingsBtn")?.addEventListener("click", () => {
-      const newHandValue = clampInt($("setHandValue")?.value, 1);
-      const newDow = ((clampInt($("setDrawDay")?.value, 0) % 7) + 7) % 7;
+      const hv = clampInt($("setHandValue")?.value, 1);
+      const dowRaw = safeNumber($("setDrawDay")?.value, 2);
+      const dow = ((Math.floor(dowRaw) % 7) + 7) % 7;
       const start = normalizeDateOrBlank($("setCycleStart")?.value || "");
       const nLocked = safeNumber($("setNLocked")?.value, 0);
 
-      state.settings.handValue = newHandValue;
-      state.settings.payoutDow = newDow;
+      state.settings.handValue = hv;
+      state.settings.payoutDow = dow;
       if (start) state.settings.cycleStartDate = start;
       state.settings.nLocked = nLocked;
 
-      // Recompute contribution hands using new HV (amounts unchanged)
-      const hv = handValue();
-      state.contributions = state.contributions.map((c) => ({ ...c, hands: safeNumber(c.amount, 0) / hv }));
+      // Recalculate hands for existing payments
+      state.contributions = state.contributions.map((c) => ({
+        ...c,
+        hands: safeNumber(c.amount, 0) / hv,
+      }));
 
-      logActivity("Settings", `Hand £${hv}, draw day ${dayName(newDow)}`);
+      logActivity("Settings", `Hand £${hv}, draw day ${dayName(dow)}`);
       saveState();
       renderAll();
-      toast("Saved", `Hand £${hv} • Draw day ${dayName(newDow)}`);
+      toast("Saved", `Hand value £${hv} • Target pot ${fmtGBP(basePot())}`);
     });
 
+    // Export / Import / Reset
     $("exportBtn")?.addEventListener("click", () => {
-      const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `pardner-draw-backup-${isoDate(new Date())}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      downloadText(`pardner-draw-backup-${isoDate(new Date())}.json`, JSON.stringify(state, null, 2), "application/json");
       toast("Exported", "Downloaded JSON backup.");
     });
 
@@ -1110,7 +1444,6 @@
         }
         if (!confirm("Import will replace current data in this browser. Continue?")) return;
 
-        // Import into this script’s storage key
         localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         state = loadState();
         saveState();
@@ -1132,6 +1465,7 @@
       toast("Reset", "All data cleared.");
     });
 
+    // Draw date change updates default payout amount
     $("drawDate")?.addEventListener("change", () => {
       const dateStr = normalizeDateOrBlank($("drawDate")?.value || "");
       if (!dateStr || !$("drawAmount")) return;
@@ -1139,7 +1473,7 @@
       $("drawAmount").value = String(pot > 0 ? pot : basePot());
     });
 
-    // Modal wiring
+    // Modal
     $("payeeModalCloseBtn")?.addEventListener("click", closePayeeModal);
     $("payeeModalCancelBtn")?.addEventListener("click", closePayeeModal);
     $("payeeModalSaveBtn")?.addEventListener("click", savePayeeModal);
@@ -1155,6 +1489,20 @@
       const m = $("payeeModal");
       if (m && m.style.display !== "none") closePayeeModal();
     });
+
+    // Start New Cycle button (inside completed banner)
+    $("startNewCycleBtn")?.addEventListener("click", () => {
+      if (!confirm("Start a new cycle?\n\nThis will ARCHIVE the current cycle (payments & draws) into History, then reset the current payments/draws to empty.\nPayees/hands/notes will be kept.")) {
+        return;
+      }
+      archiveCurrentCycleAndReset();
+      renderAll();
+      showPage("dashboard");
+      toast("New cycle", "Previous cycle archived into History.");
+    });
+
+    // Export all history CSV (optional button in Settings or History page)
+    $("exportHistoryCsvBtn")?.addEventListener("click", exportAllHistoryCsv);
   }
 
   // -----------------------------
@@ -1164,21 +1512,20 @@
     attachHandlers();
     populatePayeeSelects();
 
-    if ($("drawDate")) $("drawDate").value = isoDate(thisPayoutDay());
-    if ($("weekEnding")) $("weekEnding").value = isoDate(thisPayoutDay());
+    $("drawDate") && ($("drawDate").value = isoDate(thisPayoutDay()));
+    $("weekEnding") && ($("weekEnding").value = isoDate(thisPayoutDay()));
 
     renderAll();
     showPage("dashboard");
+
+    // PWA service worker (optional)
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./service-worker.js").catch(() => {});
+      });
+    }
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
-  } else {
-    boot();
-  }
-  if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./service-worker.js").catch(console.error);
-  });
-}
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
 })();
