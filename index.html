@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Pardner Draw</title>
 
-  <!-- PWA (optional, works great on GitHub Pages) -->
+  <!-- PWA (optional) -->
   <link rel="manifest" href="manifest.webmanifest" />
   <meta name="theme-color" content="#0f172a" />
   <link rel="icon" href="icons/icon-192.png" />
@@ -13,10 +13,10 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
 
-  <!-- Your separated CSS -->
+  <!-- CSS -->
   <link rel="stylesheet" href="css/styles.css" />
 
-  <!-- Your separated JS -->
+  <!-- JS -->
   <script src="js/pardner-draw.js" defer></script>
 </head>
 
@@ -38,10 +38,12 @@
         <button data-page="payments" type="button">Payments</button>
         <button data-page="draws" type="button">Draws</button>
         <button data-page="weekly" type="button">Weekly</button>
+        <button data-page="history" type="button">History</button><!-- ✅ NEW -->
         <button data-page="settings" type="button">Settings</button>
       </nav>
 
       <div class="sidebar-actions">
+        <!-- Optional: add btn-payment / btn-draw classes if you want coloured buttons -->
         <button class="btn btn-payment" id="quickAddPayment" type="button">+ Add payment</button>
         <button class="btn btn-draw" id="quickRecordDraw" type="button">+ Record draw</button>
       </div>
@@ -58,23 +60,40 @@
           <h1 id="pageTitle">Dashboard</h1>
           <div class="muted" id="pageSubtitle">Hands-based cycle • Payouts every Tuesday.</div>
         </div>
-        <div class="topbar-right">
-      <div class="topbar-pills">
-       <span class="pill" id="thisTuesdayPill">This Tuesday: —</span>
-       <span class="pill" id="potPill">This week’s pot: £0</span>
-       <span class="pill" id="basePotPill">Base pot: £0</span>
-      </div>
 
-      <img
-       src="images/Larme.png"
-       alt="Pardner Draw logo"
-      class="header-logo"
-        />
-       </div>
+        <div class="topbar-right">
+          <div class="topbar-pills">
+            <span class="pill" id="thisTuesdayPill">This Tuesday: —</span>
+            <span class="pill" id="potPill">This week’s pot: £0</span>
+            <span class="pill" id="basePotPill">Base pot: £0</span>
+          </div>
+
+          <!-- Optional logo (top right) -->
+          <img src="images/Larme.png" alt="Pardner Draw logo" class="header-logo" />
+        </div>
       </header>
 
       <!-- DASHBOARD -->
       <section class="page" id="page-dashboard">
+        <!-- ✅ Cycle Completed banner (auto shown/hidden by JS) -->
+        <div class="card cycle-banner" id="cycleCompleteBanner" style="display:none">
+          <div class="cycle-banner-row">
+            <div>
+              <div class="cycle-banner-title">🎉 Cycle Completed!</div>
+              <div class="cycle-banner-sub">
+                Everyone has been paid out. End date: <span class="mono" id="cycleCompleteDate">—</span>
+              </div>
+              <div class="cycle-banner-sub" id="cycleLockedText" style="margin-top:6px;">
+                Cycle is locked until you start a new cycle.
+              </div>
+            </div>
+
+            <div class="cycle-banner-actions">
+              <button class="btn cycle-btn" id="startNewCycleBtn" type="button">Start New Cycle</button>
+            </div>
+          </div>
+        </div>
+
         <div class="grid cols-4">
           <div class="card kpi">
             <div class="kpi-title">Total hands paid in</div>
@@ -126,7 +145,7 @@
               </div>
             </div>
             <div class="right">
-              <button class="btn primary" id="dashRecordDraw" type="button">Record draw</button>
+              <button class="btn btn-draw" id="dashRecordDraw" type="button">Record draw</button>
             </div>
             <div class="help">Records a 1-hand payout for the selected recipient.</div>
           </div>
@@ -147,6 +166,24 @@
                 <tbody id="notDrawnTable"></tbody>
               </table>
             </div>
+          </div>
+        </div>
+
+        <!-- ✅ Paid Out Summary -->
+        <div class="card" style="margin-top:14px">
+          <h2>Paid Out Summary</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Payee</th>
+                  <th>Hands Paid</th>
+                  <th>Total Paid</th>
+                  <th>Last Payout Date</th>
+                </tr>
+              </thead>
+              <tbody id="paidOutTable"></tbody>
+            </table>
           </div>
         </div>
 
@@ -266,9 +303,9 @@
             <input id="paymentNote" placeholder="e.g., paid ahead for 2 weeks" />
           </div>
           <div class="right">
-            <button class="btn primary" id="savePaymentBtn" type="button">Save Payment</button>
+            <button class="btn btn-payment" id="savePaymentBtn" type="button">Save Payment</button>
           </div>
-          <div class="help">Payments are saved locally and show in Weekly Summary and reports.</div>
+          <div class="help">Payments are saved locally and show in Weekly Summary and History.</div>
         </div>
 
         <div class="card" style="margin-top:14px">
@@ -298,7 +335,7 @@
             <div class="field">
               <label>Draw date</label>
               <input id="drawDate" type="date" />
-              <div class="help">The system can use any date, but your schedule is set in Settings.</div>
+              <div class="help">Your schedule is set in Settings (used for weekly windows).</div>
             </div>
             <div class="field">
               <label>Recipient (hands remaining)</label>
@@ -315,7 +352,7 @@
             <input id="drawNote" placeholder="e.g., paid out from this week’s pot" />
           </div>
           <div class="right">
-            <button class="btn primary" id="saveDrawBtn" type="button">Save Draw</button>
+            <button class="btn btn-draw" id="saveDrawBtn" type="button">Save Draw</button>
           </div>
           <div class="help">Each draw records a 1-hand payout to the recipient.</div>
         </div>
@@ -402,6 +439,49 @@
         </div>
       </section>
 
+      <!-- ✅ HISTORY PAGE -->
+      <section class="page" id="page-history" style="display:none">
+        <div class="card">
+          <h2>Archived cycles (History)</h2>
+          <div class="row" style="align-items:flex-end">
+            <div class="field" style="flex:1">
+              <label>What is this?</label>
+              <div class="help" style="margin:0">
+                When a cycle completes and you click <strong>Start New Cycle</strong>, the system archives the completed cycle (payments &amp; draws)
+                here. You can export each cycle to CSV for spreadsheets.
+              </div>
+            </div>
+            <div class="w-auto">
+              <label>&nbsp;</label>
+              <button class="btn" id="exportHistoryCsvBtn" type="button">Export History Index CSV</button>
+            </div>
+          </div>
+
+          <div class="hr"></div>
+
+          <div class="table-wrap" style="max-height:560px">
+            <table>
+              <thead>
+                <tr>
+                  <th>Cycle</th>
+                  <th>Started</th>
+                  <th>Ended</th>
+                  <th>Hands</th>
+                  <th>Total paid in</th>
+                  <th>Total paid out</th>
+                  <th>Export</th>
+                </tr>
+              </thead>
+              <tbody id="historyTable"></tbody>
+            </table>
+          </div>
+
+          <div class="help" style="margin-top:10px">
+            Tip: Use “Export CSV” per cycle to download a spreadsheet with <strong>Contributions</strong> and <strong>Draws</strong>.
+          </div>
+        </div>
+      </section>
+
       <!-- SETTINGS -->
       <section class="page" id="page-settings" style="display:none">
         <div class="grid cols-2">
@@ -412,7 +492,7 @@
               <div class="field">
                 <label>Hand value (£)</label>
                 <input id="setHandValue" type="number" min="1" step="1" value="50" />
-                <div class="help">Changing this updates base/target pot and recalculates “hands” for saved payments.</div>
+                <div class="help">Changing this updates the target pot and recalculates “hands” for saved payments.</div>
               </div>
 
               <div class="field">
@@ -426,7 +506,7 @@
                   <option value="6">Saturday</option>
                   <option value="0">Sunday</option>
                 </select>
-                <div class="help">Used for “next payout day” and weekly summary windows.</div>
+                <div class="help">Used for weekly summary windows and payout planning.</div>
               </div>
             </div>
 
@@ -434,7 +514,7 @@
               <div class="field">
                 <label>Cycle start date</label>
                 <input id="setCycleStart" type="date" />
-                <div class="help">End date is calculated from total hands (weeks = total hands).</div>
+                <div class="help">Estimated end date = start date + (total hands × 7 days).</div>
               </div>
 
               <div class="field">
@@ -444,13 +524,12 @@
               </div>
             </div>
 
-            <!-- ✅ NEW: Save button (this is what you were missing) -->
             <div class="right" style="margin-top:12px">
               <button class="btn primary" id="saveSettingsBtn" type="button">Save Settings</button>
             </div>
 
             <div class="help muted" style="margin-top:10px">
-              Tip: If you switch pages without saving, the values will revert to the last saved settings.
+              Tip: If you switch pages without saving, values will revert to the last saved settings.
             </div>
           </div>
 
@@ -474,7 +553,7 @@
             <div class="field">
               <label>Danger zone</label>
               <button class="btn danger" id="resetBtn" type="button">Reset all data</button>
-              <div class="help">Clears payees, payments, draws, and settings.</div>
+              <div class="help">Clears payees, payments, draws, history, and settings.</div>
             </div>
           </div>
         </div>
@@ -519,7 +598,6 @@
 
         <div class="field" style="min-width:260px">
           <label>Requested draw dates (one per hand)</label>
-          <!-- ✅ Multi-date container -->
           <div id="editPayeeReqDatesWrap" class="stack" style="display:flex;flex-direction:column;gap:8px"></div>
           <div class="help">If this payee has 3 hands, enter up to 3 requested dates.</div>
         </div>
@@ -536,7 +614,7 @@
       </div>
 
       <div class="help muted" style="margin-top:10px">
-        Tip: changing hands affects cycle length and base pot calculations.
+        Tip: changing hands affects cycle length and target pot calculations.
       </div>
     </div>
   </div>
