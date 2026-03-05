@@ -69,7 +69,7 @@
           </div>
 
           <!-- Optional logo (top right) -->
-          <img src="images/Larme.png" alt="Pardner Draw logo" class="header-logo" />
+          <img src="images/Larme.png " alt="Pardner Draw logo" class="header-logo" />
         </div>
       </header>
 
@@ -130,6 +130,24 @@
           <span class="pill" id="cycleEndPill">Cycle end: —</span>
         </div>
 
+        <div class="card" style="margin-top:14px">
+         <h2>Next due draws (requested dates)</h2>
+         <div class="help">Shows the next requested draw per payee (only for hands not yet paid out).</div>
+          <div class="table-wrap">
+           <table>
+            <thead>
+             <tr>
+              <th>Payee</th>
+              <th>Due date</th>
+               <th>Hand #</th>
+               <th>Status</th>
+             </tr>
+            </thead>
+           <tbody id="nextDueTable"></tbody>
+          </table>
+         </div>
+       </div>
+         
         <div class="grid cols-2" style="margin-top:14px">
           <div class="card">
             <h2>Quick record draw</h2>
@@ -140,7 +158,7 @@
               </div>
               <div class="field">
                 <label>Amount (£)</label>
-                <input id="dashDrawAmount" type="number" min="0" step="1" />
+                <input id="dashDrawAmount" type="number" min="0" step="1" readonly />
                 <div class="help">Tip: set this to the week’s pot or base pot.</div>
               </div>
             </div>
@@ -214,7 +232,7 @@
                 <label>Name</label>
                 <input id="payeeName" placeholder="e.g., John Smith" />
               </div>
-              <div class="field">
+              <div class="field field-hands">
                 <label>Hands</label>
                 <input id="payeeHands" type="number" min="1" step="1" value="1" />
                 <div class="help">1 hand = 1 payout slot in the cycle.</div>
@@ -343,7 +361,7 @@
             </div>
             <div class="field">
               <label>Amount (£)</label>
-              <input id="drawAmount" type="number" min="0" step="1" />
+              <input id="drawAmount" type="number" min="0" step="1" readonly />
               <div class="help">Defaults to this week’s pot (or base pot if empty).</div>
             </div>
           </div>
