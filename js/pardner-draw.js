@@ -1,29 +1,32 @@
 /* js/pardner-draw.js
-   Pardner Draw — v9 (localStorage)
-   ✅ Editable Hand value + Draw day + Cycle start (saved)
-   ✅ Target weekly pot / Remaining funding / Progress bar (dashboard)
-   ✅ Payees can have requested draw dates PER HAND (requestedDrawDates[])
+   Pardner Draw — v10 (localStorage)
+   ✅ Weekly OR Monthly mode (Settings)
+      - Weekly: draw day = weekday (0..6), pot = 7-day window ending on draw date
+      - Monthly: draw day = day-of-month (1..28), pot = calendar month of draw date
+   ✅ Draw amount ALWAYS equals the period pot (weekly/monthly) — enforced + readonly
+   ✅ Dashboard quick draw amount ALWAYS equals current period pot — enforced + readonly
+   ✅ Target period pot / Remaining funding / Progress bar (dashboard)
+      - Target period pot = totalCommittedHands * handValue
+   ✅ Payees can have requested draw dates per hand (requestedDrawDates[])
    ✅ Prevent duplicate requested draw dates across ALL payees/hands
-   ✅ Dashboard: “Next due draws” window (who + due date + hand #)
-   ✅ Draw amount ALWAYS equals the selected week’s pot (readonly + enforced)
-   ✅ Dashboard quick draw amount ALWAYS equals THIS week’s pot (readonly + enforced)
-   ✅ Paid Out Summary table + fully paid rows green
-   ✅ “Cycle Completed” banner (green) + Start New Cycle button
-   ✅ Auto-lock when complete (blocks payments/draws until new cycle)
-   ✅ Keeps payment/draw history by archiving cycles into History “spreadsheet” (CSV export)
+   ✅ Dashboard: Next due draws window
+   ✅ Paid Out Summary + fully paid rows green
+   ✅ Cycle completed banner + Start New Cycle button + auto-lock on completion
+   ✅ History archive “spreadsheet” (CSV export)
 
-   Requires your HTML:
-   - Draw amount input should be readonly (recommended), but JS enforces anyway.
-   - Dashboard quick draw amount input exists: #dashDrawAmount (JS enforces readonly anyway)
-   - Next due table exists: #nextDueTable (tbody)
-   - Paid out table exists: #paidOutTable (tbody)
-   - History table exists: #historyTable (tbody) + optional #exportHistoryCsvBtn
+   Required HTML IDs (same as your last HTML, plus Settings additions):
+   - Settings: #setFrequency (weekly/monthly), #weeklySettings, #monthlySettings, #setMonthDay
+   - Dashboard: #dashDrawAmount, #dashRecipient, #dashRecordDraw
+   - Draws: #drawDate, #drawPayee, #drawAmount, #saveDrawBtn
+   - Next due: #nextDueTable
+   - Paid out: #paidOutTable
+   - History: #historyTable, optional #exportHistoryCsvBtn
 */
 
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "pardner_draw_v9";
+  const STORAGE_KEY = "pardner_draw_v10";
   const PAGES = ["dashboard", "payees", "payments", "draws", "weekly", "settings", "history"];
   const $ = (id) => document.getElementById(id);
 
@@ -121,7 +124,9 @@
     return {
       settings: {
         handValue: 50,
-        payoutDow: 2, // Tuesday
+        frequency: "weekly", // "weekly" | "monthly"
+        payoutDow: 2,        // weekly: 0..6 (Tuesday default)
+        monthDay: 1,         // monthly: 1..28
         cycleStartDate: isoDate(new Date()),
         nLocked: 0,
         cycleLocked: false,
@@ -153,14 +158,16 @@
       s.activity = Array.isArray(s.activity) ? s.activity : [];
       s.history = Array.isArray(s.history) ? s.history : [];
 
-      // settings defaults
+      // settings defaults / migration
       s.settings.handValue = clampInt(s.settings.handValue, 1);
+      s.settings.frequency = (s.settings.frequency === "monthly") ? "monthly" : "weekly";
       s.settings.payoutDow = ((clampInt(s.settings.payoutDow, 0) % 7) + 7) % 7;
+      s.settings.monthDay = Math.min(28, Math.max(1, clampInt(s.settings.monthDay ?? 1, 1)));
       s.settings.cycleStartDate = s.settings.cycleStartDate || isoDate(new Date());
       s.settings.nLocked = safeNumber(s.settings.nLocked, 0);
       s.settings.cycleLocked = !!s.settings.cycleLocked;
 
-      // payees migrate requestedDrawDate -> requestedDrawDates[]
+      // payees: migrate requestedDrawDate -> requestedDrawDates[]
       s.payees = s.payees.map((p) => {
         const hands = clampInt(p.hands, 1);
         let arr = [];
@@ -221,7 +228,9 @@
         title: String(h.title || "Archived cycle"),
         started: String(h.started || ""),
         ended: String(h.ended || ""),
+        frequency: (h.frequency === "monthly") ? "monthly" : "weekly",
         payoutDow: Number.isFinite(Number(h.payoutDow)) ? Number(h.payoutDow) : s.settings.payoutDow,
+        monthDay: Math.min(28, Math.max(1, clampInt(h.monthDay ?? 1, 1))),
         handValue: clampInt(h.handValue, 1),
         payeeSnapshot: Array.isArray(h.payeeSnapshot) ? h.payeeSnapshot : [],
         contributions: Array.isArray(h.contributions) ? h.contributions : [],
@@ -254,16 +263,21 @@
   function handValue() {
     return clampInt(state.settings.handValue, 1);
   }
+  function frequency() {
+    return state.settings.frequency === "monthly" ? "monthly" : "weekly";
+  }
   function payoutDow() {
     return ((clampInt(state.settings.payoutDow, 0) % 7) + 7) % 7;
+  }
+  function monthDay() {
+    return Math.min(28, Math.max(1, clampInt(state.settings.monthDay ?? 1, 1)));
   }
 
   // -----------------------------
   // Duplicate requested-date prevention
   // -----------------------------
   function collectAllRequestedDates({ excludePayeeId = null } = {}) {
-    // Map dateStr -> { payeeId, payeeName, index }
-    const used = new Map();
+    const used = new Map(); // dateStr -> { payeeId, payeeName, index }
     for (const p of state.payees) {
       if (excludePayeeId && p.id === excludePayeeId) continue;
       const arr = Array.isArray(p.requestedDrawDates) ? p.requestedDrawDates : [];
@@ -286,7 +300,7 @@
   }
 
   // -----------------------------
-  // Lock / Completion
+  // Completion / Lock
   // -----------------------------
   function totalCommittedHands() {
     return state.payees.reduce((sum, p) => sum + clampInt(p.hands, 1), 0);
@@ -308,12 +322,13 @@
   }
 
   // -----------------------------
-  // Schedule helpers
+  // Payout date logic (weekly vs monthly)
   // -----------------------------
-  function isPayoutDay(d) {
+  function isWeeklyPayoutDay(d) {
     return d.getDay() === payoutDow();
   }
-  function nextPayoutDay(from = new Date()) {
+
+  function nextWeeklyPayoutDay(from = new Date()) {
     const d = new Date(from);
     d.setHours(0, 0, 0, 0);
     const day = d.getDay();
@@ -323,28 +338,74 @@
     d.setDate(d.getDate() + delta);
     return d;
   }
-  function thisPayoutDay() {
+
+  function thisPayoutDate() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    return isPayoutDay(today) ? today : nextPayoutDay(today);
+
+    if (frequency() === "weekly") {
+      return isWeeklyPayoutDay(today) ? today : nextWeeklyPayoutDay(today);
+    }
+
+    // monthly: next date matching monthDay (1..28)
+    const md = monthDay();
+    const y = today.getFullYear();
+    const m = today.getMonth();
+
+    const candidate = new Date(y, m, md);
+    candidate.setHours(0, 0, 0, 0);
+    if (candidate >= today) return candidate;
+
+    const next = new Date(y, m + 1, md);
+    next.setHours(0, 0, 0, 0);
+    return next;
   }
 
-  function weekBoundsForPayoutEnd(endStr) {
-    const endDay = parseISODate(endStr);
-    if (!endDay) return null;
-    const end = new Date(endDay);
-    end.setHours(23, 59, 59, 999);
-    const start = addDays(endDay, -6);
+  // -----------------------------
+  // Period bounds & pot
+  // -----------------------------
+  function periodBoundsForDate(dateStr) {
+    const d = parseISODate(dateStr);
+    if (!d) return null;
+
+    if (frequency() === "weekly") {
+      const end = new Date(d);
+      end.setHours(23, 59, 59, 999);
+      const start = addDays(d, -6);
+      start.setHours(0, 0, 0, 0);
+      return { start, end };
+    }
+
+    // monthly: calendar month of dateStr
+    const start = new Date(d.getFullYear(), d.getMonth(), 1);
     start.setHours(0, 0, 0, 0);
+    const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    end.setHours(23, 59, 59, 999);
     return { start, end };
   }
 
-  // -----------------------------
-  // Cycle math / pots
-  // -----------------------------
-  function basePot() {
-    return totalCommittedHands() * handValue(); // target weekly pot
+  function periodContributions(dateStr) {
+    const b = periodBoundsForDate(dateStr);
+    if (!b) return [];
+    return state.contributions.filter((c) => {
+      const cd = parseISODate(c.date);
+      return cd && cd >= b.start && cd <= b.end;
+    });
   }
+
+  function periodPotForDate(dateStr) {
+    return periodContributions(dateStr).reduce((s, c) => s + safeNumber(c.amount, 0), 0);
+  }
+
+  // -----------------------------
+  // Pots & totals
+  // -----------------------------
+  function targetPeriodPot() {
+    // In BOTH weekly & monthly modes, “target” means all hands pay in once for that payout period.
+    // If you want monthly target to be 4x weekly, tell me and I’ll change this.
+    return totalCommittedHands() * handValue();
+  }
+
   function totalPaidAllTime() {
     return state.contributions.reduce((sum, c) => sum + safeNumber(c.amount, 0), 0);
   }
@@ -354,14 +415,45 @@
 
   function getCycleStartDate() {
     const d = parseISODate(state.settings.cycleStartDate);
-    return d || thisPayoutDay();
+    return d || thisPayoutDate();
   }
+
   function getCycleEndDateEstimated() {
-    return addDays(getCycleStartDate(), totalCommittedHands() * 7);
+    // estimate: totalHands payouts, spaced by period length:
+    // weekly => 7 days per draw
+    // monthly => 1 month per draw (approx) — use month increments precisely
+    const start = getCycleStartDate();
+    const hands = totalCommittedHands();
+    if (hands <= 0) return start;
+
+    if (frequency() === "weekly") {
+      return addDays(start, hands * 7);
+    }
+
+    // monthly: add N months from start date's month/day
+    const md = monthDay();
+    const y = start.getFullYear();
+    const m = start.getMonth();
+    const end = new Date(y, m + hands, md);
+    end.setHours(0, 0, 0, 0);
+    return end;
   }
+
   function getLastPayoutDateEstimated() {
-    return addDays(getCycleStartDate(), Math.max(0, (totalCommittedHands() - 1) * 7));
+    const start = getCycleStartDate();
+    const hands = totalCommittedHands();
+    if (hands <= 1) return start;
+
+    if (frequency() === "weekly") return addDays(start, (hands - 1) * 7);
+
+    const md = monthDay();
+    const y = start.getFullYear();
+    const m = start.getMonth();
+    const last = new Date(y, m + (hands - 1), md);
+    last.setHours(0, 0, 0, 0);
+    return last;
   }
+
   function getActualCycleEndDateFromDraws() {
     if (!state.draws.length) return null;
     const last = [...state.draws].sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
@@ -374,20 +466,9 @@
     return Number.isFinite(a) && a > 0 && a % hv === 0;
   }
 
-  function contributionsInWeek(endStr) {
-    const b = weekBoundsForPayoutEnd(endStr);
-    if (!b) return [];
-    return state.contributions.filter((c) => {
-      const d = parseISODate(c.date);
-      if (!d) return false;
-      return d >= b.start && d <= b.end;
-    });
-  }
-
-  function weekPotForEnd(endStr) {
-    return contributionsInWeek(endStr).reduce((s, c) => s + safeNumber(c.amount, 0), 0);
-  }
-
+  // -----------------------------
+  // Payee paid-out tracking
+  // -----------------------------
   function payeeTotals(payeeId) {
     const paid = state.contributions
       .filter((c) => c.payeeId === payeeId)
@@ -426,7 +507,7 @@
   }
 
   // -----------------------------
-  // Funding widgets (in header)
+  // Funding widgets (header)
   // -----------------------------
   function ensureFundingWidgets() {
     const host = document.querySelector(".topbar-right") || $("page-dashboard");
@@ -445,8 +526,8 @@
     line.style.gap = "10px";
     line.style.flexWrap = "wrap";
     line.innerHTML = `
-      <span class="pill" id="targetWeeklyPotPill">Target weekly pot: £0</span>
-      <span class="pill warn" id="remainingFundingPill">Remaining funding: £0</span>
+      <span class="pill" id="targetWeeklyPotPill">Target pot: £0</span>
+      <span class="pill warn" id="remainingFundingPill">Remaining: £0</span>
     `;
 
     const barOuter = document.createElement("div");
@@ -476,26 +557,26 @@
     host.appendChild(wrap);
   }
 
-  function renderFundingWidgets({ weekPot, targetPot }) {
+  function renderFundingWidgets({ pot, target }) {
     ensureFundingWidgets();
 
-    const target = Math.max(0, safeNumber(targetPot, 0));
-    const pot = Math.max(0, safeNumber(weekPot, 0));
-    const remaining = Math.max(0, target - pot);
-    const pct = target > 0 ? Math.min(1, pot / target) : 0;
+    const tgt = Math.max(0, safeNumber(target, 0));
+    const p = Math.max(0, safeNumber(pot, 0));
+    const remaining = Math.max(0, tgt - p);
+    const pct = tgt > 0 ? Math.min(1, p / tgt) : 0;
 
     const targetEl = $("targetWeeklyPotPill");
     const remEl = $("remainingFundingPill");
     const bar = $("fundingProgressBar");
     const txt = $("fundingProgressText");
 
-    if (targetEl) targetEl.textContent = `Target weekly pot: ${fmtGBP(target)}`;
+    if (targetEl) targetEl.textContent = `Target pot: ${fmtGBP(tgt)}`;
     if (remEl) {
       remEl.className = remaining === 0 ? "pill success" : "pill warn";
-      remEl.textContent = `Remaining funding: ${fmtGBP(remaining)}`;
+      remEl.textContent = `Remaining: ${fmtGBP(remaining)}`;
     }
     if (bar) bar.style.width = `${Math.round(pct * 100)}%`;
-    if (txt) txt.textContent = `Progress: ${Math.round(pct * 100)}% (${fmtGBP(pot)} / ${fmtGBP(target)})`;
+    if (txt) txt.textContent = `Progress: ${Math.round(pct * 100)}% (${fmtGBP(p)} / ${fmtGBP(tgt)})`;
   }
 
   // -----------------------------
@@ -514,16 +595,20 @@
       btn.classList.toggle("active", btn.dataset.page === safePage);
     });
 
-    const payoutName = dayName(payoutDow());
     const hv = handValue();
+    const freq = frequency();
+    const subtitle =
+      freq === "weekly"
+        ? `Weekly payouts every ${dayName(payoutDow())}.`
+        : `Monthly payout on day ${monthDay()} each month.`;
 
     const map = {
-      dashboard: ["Dashboard", `Hands-based cycle • Payouts every ${payoutName}.`],
+      dashboard: ["Dashboard", subtitle],
       payees: ["Payees", "Edit requested draw dates per hand (no duplicates allowed)."],
-      payments: ["Add Payment", `Payments must be multiples of £${hv} (hands).`],
-      draws: ["Record Draw", `Draw amount is auto-set to that week’s pot.`],
-      weekly: ["Weekly Summary", `7-day window ending on ${payoutName}.`],
-      settings: ["Settings", "Edit hand value, draw day, cycle start; export/import; reset."],
+      payments: ["Add Payment", `Payments should be multiples of £${hv} (hands).`],
+      draws: ["Record Draw", `Draw amount is auto-set to the ${freq} pot.`],
+      weekly: [freq === "weekly" ? "Weekly Summary" : "Period Summary", `Shows totals for the current ${freq} period.`],
+      settings: ["Settings", "Change weekly/monthly mode, hand value, start date; export/import."],
       history: ["History", "Archived cycles: export to CSV for spreadsheet use."],
     };
 
@@ -620,12 +705,10 @@
     while (reqArr.length < hands) reqArr.push("");
     if (reqArr.length > hands) reqArr = reqArr.slice(0, hands);
 
-    // 1) no duplicates inside same payee
     if (hasDuplicateDatesInArray(reqArr)) {
       return toast("Duplicate date", "This payee has the same requested date more than once. Each hand must have a different date.");
     }
 
-    // 2) no duplicates across other payees
     const used = collectAllRequestedDates({ excludePayeeId: editingPayeeId });
     for (const d of reqArr.filter(Boolean)) {
       if (used.has(d)) {
@@ -654,7 +737,7 @@
   }
 
   // -----------------------------
-  // Cycle completed banner + lock + start new cycle
+  // Cycle completed banner + lock + new cycle
   // -----------------------------
   function renderCycleCompletedBanner() {
     const banner = $("cycleCompleteBanner");
@@ -663,7 +746,6 @@
 
     const complete = isCycleComplete();
 
-    // auto-lock when complete
     if (complete && !isCycleLocked()) {
       setCycleLocked(true);
       logActivity("Cycle", "Cycle completed → auto-locked");
@@ -711,47 +793,37 @@
   }
 
   function archiveCurrentCycleAndReset() {
-    const hv = handValue();
-    const dow = payoutDow();
-
-    const started = state.settings.cycleStartDate || "";
-    const ended = getActualCycleEndDateFromDraws() || isoDate(getCycleEndDateEstimated());
-
-    const payeeSnapshot = state.payees.map((p) => ({
-      id: p.id,
-      name: p.name,
-      hands: clampInt(p.hands, 1),
-      notes: p.notes || "",
-      requestedDrawDates: Array.isArray(p.requestedDrawDates) ? p.requestedDrawDates.slice() : [],
-    }));
-
-    const totalContrib = state.contributions.reduce((s, c) => s + safeNumber(c.amount, 0), 0);
-    const totalDrawsAmt = state.draws.reduce((s, d) => s + safeNumber(d.amount, 0), 0);
-
     const entry = {
       id: uid("h"),
-      title: `Cycle ${started || "?"} → ${ended || "?"}`,
-      started,
-      ended,
-      payoutDow: dow,
-      handValue: hv,
-      payeeSnapshot,
+      title: `Cycle ${state.settings.cycleStartDate || "?"} → ${getActualCycleEndDateFromDraws() || isoDate(getCycleEndDateEstimated())}`,
+      started: state.settings.cycleStartDate || "",
+      ended: getActualCycleEndDateFromDraws() || isoDate(getCycleEndDateEstimated()),
+      frequency: frequency(),
+      payoutDow: payoutDow(),
+      monthDay: monthDay(),
+      handValue: handValue(),
+      payeeSnapshot: state.payees.map((p) => ({
+        id: p.id,
+        name: p.name,
+        hands: clampInt(p.hands, 1),
+        notes: p.notes || "",
+        requestedDrawDates: Array.isArray(p.requestedDrawDates) ? p.requestedDrawDates.slice() : [],
+      })),
       contributions: state.contributions.map((c) => ({ ...c })),
       draws: state.draws.map((d) => ({ ...d })),
       totals: {
         committedHands: totalCommittedHands(),
-        totalContributions: totalContrib,
-        totalDraws: totalDrawsAmt,
+        totalContributions: state.contributions.reduce((s, c) => s + safeNumber(c.amount, 0), 0),
+        totalDraws: state.draws.reduce((s, d) => s + safeNumber(d.amount, 0), 0),
       },
       createdAt: Date.now(),
     };
 
     state.history.unshift(entry);
 
-    // Reset flow (keep roster)
     state.contributions = [];
     state.draws = [];
-    state.settings.cycleStartDate = isoDate(thisPayoutDay());
+    state.settings.cycleStartDate = isoDate(thisPayoutDate());
     setCycleLocked(false);
 
     logActivity("Cycle", `New cycle started (${state.settings.cycleStartDate}); archived previous cycle`);
@@ -759,11 +831,37 @@
   }
 
   // -----------------------------
-  // Rendering utilities
+  // Draw amount enforcement
+  // -----------------------------
+  function setDrawAmountFromPeriodPot(dateStr) {
+    const d = normalizeDateOrBlank(dateStr);
+    if (!d) return 0;
+    const pot = periodPotForDate(d);
+
+    const el = $("drawAmount");
+    if (el) {
+      el.value = String(pot);
+      el.readOnly = true;
+    }
+    return pot;
+  }
+
+  function setDashboardQuickDrawAmountFromCurrentPeriodPot() {
+    const d = isoDate(thisPayoutDate());
+    const pot = periodPotForDate(d);
+
+    const el = $("dashDrawAmount");
+    if (el) {
+      el.value = String(pot);
+      el.readOnly = true;
+    }
+    return pot;
+  }
+
+  // -----------------------------
+  // Rendering: tables + pages
   // -----------------------------
   function populatePayeeSelects() {
-    const hv = handValue();
-
     const paymentPayee = $("paymentPayee");
     if (paymentPayee) {
       paymentPayee.innerHTML =
@@ -784,6 +882,7 @@
     }
 
     if ($("paymentAmount")) {
+      const hv = handValue();
       $("paymentAmount").setAttribute("step", String(hv));
       $("paymentAmount").setAttribute("placeholder", `${hv}, ${hv * 2}, ${hv * 3}...`);
     }
@@ -803,9 +902,6 @@
     else amtEl.classList.remove("danger-outline");
   }
 
-  // -----------------------------
-  // New Dashboard panels
-  // -----------------------------
   function renderNextDueDraws() {
     const tbody = $("nextDueTable");
     if (!tbody) return;
@@ -819,15 +915,11 @@
       const remaining = Math.max(0, committed - paidOut);
       if (remaining <= 0) continue;
 
-      const nextHandIndex = Math.min(paidOut, committed - 1); // next unpaid hand
+      const nextHandIndex = Math.min(paidOut, committed - 1);
       const reqDates = Array.isArray(p.requestedDrawDates) ? p.requestedDrawDates : [];
       const due = normalizeDateOrBlank(reqDates[nextHandIndex] || "");
 
-      rows.push({
-        name: p.name,
-        due,
-        handNo: nextHandIndex + 1,
-      });
+      rows.push({ name: p.name, due, handNo: nextHandIndex + 1 });
     }
 
     rows.sort((a, b) => {
@@ -838,17 +930,15 @@
     });
 
     tbody.innerHTML =
-      rows
-        .map((r) => {
-          const status = r.due ? `<span class="pill">Due</span>` : `<span class="pill warn">No date</span>`;
-          return `<tr>
-            <td><strong>${escapeHtml(r.name)}</strong></td>
-            <td class="muted">${r.due ? escapeHtml(r.due) : "—"}</td>
-            <td class="mono">${r.handNo}</td>
-            <td>${status}</td>
-          </tr>`;
-        })
-        .join("") || `<tr><td colspan="4" class="muted">No payees due (everyone paid out).</td></tr>`;
+      rows.map((r) => {
+        const status = r.due ? `<span class="pill">Due</span>` : `<span class="pill warn">No date</span>`;
+        return `<tr>
+          <td><strong>${escapeHtml(r.name)}</strong></td>
+          <td class="muted">${r.due ? escapeHtml(r.due) : "—"}</td>
+          <td class="mono">${r.handNo}</td>
+          <td>${status}</td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="4" class="muted">No payees due (everyone paid out).</td></tr>`;
   }
 
   function renderPaidOutSummary() {
@@ -882,9 +972,6 @@
     table.innerHTML = rows.join("") || `<tr><td colspan="4" class="muted">No payouts recorded yet.</td></tr>`;
   }
 
-  // -----------------------------
-  // History “spreadsheet”
-  // -----------------------------
   function renderHistory() {
     const tbody = $("historyTable");
     if (!tbody) return;
@@ -897,8 +984,13 @@
         const committedHands = safeNumber(h.totals?.committedHands, 0);
         const totalContrib = safeNumber(h.totals?.totalContributions, 0);
         const totalDrawsAmt = safeNumber(h.totals?.totalDraws, 0);
+        const freqLabel = h.frequency === "monthly" ? `Monthly (day ${h.monthDay})` : `Weekly (${dayName(h.payoutDow)})`;
+
         return `<tr>
-          <td><strong>${escapeHtml(title)}</strong><div class="help">Draw day: ${escapeHtml(dayName(h.payoutDow))} • Hand: £${escapeHtml(h.handValue)}</div></td>
+          <td>
+            <strong>${escapeHtml(title)}</strong>
+            <div class="help">${escapeHtml(freqLabel)} • Hand: £${escapeHtml(h.handValue)}</div>
+          </td>
           <td class="muted">${escapeHtml(h.started || "—")}</td>
           <td class="muted">${escapeHtml(h.ended || "—")}</td>
           <td class="mono">${committedHands}</td>
@@ -924,7 +1016,9 @@
     lines.push(`Cycle,${csvEscape(h.title || "")}`);
     lines.push(`Started,${csvEscape(h.started || "")}`);
     lines.push(`Ended,${csvEscape(h.ended || "")}`);
-    lines.push(`DrawDay,${csvEscape(dayName(h.payoutDow))}`);
+    lines.push(`Frequency,${csvEscape(h.frequency || "")}`);
+    if (h.frequency === "weekly") lines.push(`DrawDay,${csvEscape(dayName(h.payoutDow))}`);
+    if (h.frequency === "monthly") lines.push(`MonthDay,${csvEscape(h.monthDay)}`);
     lines.push(`HandValue,${csvEscape(h.handValue)}`);
     lines.push("");
 
@@ -952,14 +1046,16 @@
 
   function exportAllHistoryCsv() {
     const rows = [
-      ["Title", "Started", "Ended", "Draw Day", "Hand Value", "Committed Hands", "Total Contributions", "Total Draws"],
+      ["Title", "Started", "Ended", "Frequency", "Draw Day", "Month Day", "Hand Value", "Committed Hands", "Total Contributions", "Total Draws"],
     ];
     for (const h of state.history) {
       rows.push([
         h.title || "",
         h.started || "",
         h.ended || "",
-        dayName(h.payoutDow),
+        h.frequency || "",
+        h.frequency === "weekly" ? dayName(h.payoutDow) : "",
+        h.frequency === "monthly" ? String(h.monthDay) : "",
         String(h.handValue),
         String(safeNumber(h.totals?.committedHands, 0)),
         String(safeNumber(h.totals?.totalContributions, 0)),
@@ -971,73 +1067,52 @@
   }
 
   // -----------------------------
-  // Draw amount enforcement
-  // -----------------------------
-  function setDrawAmountFromWeekPot(dateStr) {
-    const d = normalizeDateOrBlank(dateStr);
-    if (!d) return 0;
-    const pot = weekPotForEnd(d);
-
-    if ($("drawAmount")) {
-      $("drawAmount").value = String(pot);
-      $("drawAmount").readOnly = true;
-    }
-    return pot;
-  }
-
-  function setDashboardQuickDrawAmountFromThisWeekPot() {
-    const d = isoDate(thisPayoutDay());
-    const pot = weekPotForEnd(d);
-
-    if ($("dashDrawAmount")) {
-      $("dashDrawAmount").value = String(pot);
-      $("dashDrawAmount").readOnly = true;
-    }
-    return pot;
-  }
-
-  // -----------------------------
-  // Rendering main pages
+  // Page rendering
   // -----------------------------
   function renderDashboard() {
     refreshPayeeDrawFlags();
 
     const hv = handValue();
-    const payoutName = dayName(payoutDow());
+    const freq = frequency();
+    const next = thisPayoutDate();
+    const nextStr = isoDate(next);
 
-    const handsTotal = totalCommittedHands();
-    const target = basePot();
-    const nextPay = thisPayoutDay();
-    const nextPayStr = isoDate(nextPay);
-    const weekPot = weekPotForEnd(nextPayStr);
+    const pot = periodPotForDate(nextStr);
+    const target = targetPeriodPot();
 
-    $("kpiTotalHands") && ($("kpiTotalHands").textContent = totalHandsPaidAllTime().toLocaleString("en-GB", { maximumFractionDigits: 0 }));
+    // KPIs
+    $("kpiTotalHands") && ($("kpiTotalHands").textContent =
+      totalHandsPaidAllTime().toLocaleString("en-GB", { maximumFractionDigits: 0 }));
     $("kpiTotalMoney") && ($("kpiTotalMoney").textContent = `${fmtGBP(totalPaidAllTime())} total`);
-    $("kpiN") && ($("kpiN").textContent = String(handsTotal));
+    $("kpiN") && ($("kpiN").textContent = String(totalCommittedHands()));
 
-    const funded = handsTotal > 0 ? Math.floor(totalHandsPaidAllTime() / handsTotal) : 0;
+    const funded = totalCommittedHands() > 0 ? Math.floor(totalHandsPaidAllTime() / totalCommittedHands()) : 0;
     $("kpiFundedDraws") && ($("kpiFundedDraws").textContent = String(funded));
-    $("kpiFundedSub") && ($("kpiFundedSub").textContent = `${funded} / ${handsTotal || 0}`);
+    $("kpiFundedSub") && ($("kpiFundedSub").textContent = `${funded} / ${totalCommittedHands() || 0}`);
 
     $("kpiCompletedDraws") && ($("kpiCompletedDraws").textContent = String(drawsCompleted()));
     $("kpiRemainingSub") && ($("kpiRemainingSub").textContent = `Remaining: ${drawsRemainingHands()}`);
     $("kpiAvailableDraws") && ($("kpiAvailableDraws").textContent = String(Math.max(0, funded - drawsCompleted())));
 
+    // Header pills
     if ($("thisTuesdayPill")) {
       $("thisTuesdayPill").textContent =
-        `This ${payoutName}: ${nextPay.toLocaleDateString("en-GB", { weekday: "short", year: "numeric", month: "short", day: "2-digit" })}`;
+        freq === "weekly"
+          ? `This ${dayName(payoutDow())}: ${next.toLocaleDateString("en-GB", { weekday: "short", year: "numeric", month: "short", day: "2-digit" })}`
+          : `This month (day ${monthDay()}): ${next.toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "2-digit" })}`;
     }
-    $("potPill") && ($("potPill").textContent = `This week’s pot: ${fmtGBP(weekPot)}`);
-    $("basePotPill") && ($("basePotPill").textContent = `Base/Target (hands×£${hv}): ${fmtGBP(target)}`);
+    $("potPill") && ($("potPill").textContent = `${freq === "weekly" ? "This week’s" : "This month’s"} pot: ${fmtGBP(pot)}`);
+    $("basePotPill") && ($("basePotPill").textContent = `Target pot (hands×£${hv}): ${fmtGBP(target)}`);
 
-    renderFundingWidgets({ weekPot, targetPot: target });
+    renderFundingWidgets({ pot, target });
 
+    // Funding pill
     const fundingPill = $("fundingPill");
     if (fundingPill) {
-      if (handsTotal <= 0) {
+      if (totalCommittedHands() <= 0) {
         fundingPill.className = "pill danger";
         fundingPill.textContent = "No hands set";
-      } else if (weekPot >= target && target > 0) {
+      } else if (pot >= target && target > 0) {
         fundingPill.className = "pill success";
         fundingPill.textContent = "Funded for this payout ✅";
       } else {
@@ -1046,6 +1121,7 @@
       }
     }
 
+    // Cycle pills
     const start = getCycleStartDate();
     const last = getLastPayoutDateEstimated();
     const endEst = getCycleEndDateEstimated();
@@ -1053,7 +1129,7 @@
     $("lastPayoutPill") && ($("lastPayoutPill").textContent = `Last payout: ${isoDate(last)}`);
     $("cycleEndPill") && ($("cycleEndPill").textContent = `Cycle end: ${isoDate(endEst)}`);
 
-    // Quick draw selector
+    // Quick draw recipient list
     const sel = $("dashRecipient");
     if (sel) {
       const list = state.payees
@@ -1064,14 +1140,10 @@
         : `<option value="">All hands paid out</option>`;
     }
 
-    // ✅ quick draw amount = this week pot (readonly)
-    setDashboardQuickDrawAmountFromThisWeekPot();
+    // ✅ Quick draw amount = current period pot
+    setDashboardQuickDrawAmountFromCurrentPeriodPot();
 
-    // Tables
-    renderNextDueDraws();
-    renderPaidOutSummary();
-
-    // Not fully paid out table
+    // Not fully paid out table (uses next unpaid hand requested date)
     const notDrawnTable = $("notDrawnTable");
     if (notDrawnTable) {
       const rows = state.payees
@@ -1098,6 +1170,10 @@
           </tr>`;
         }).join("") || `<tr><td colspan="5" class="muted">Everyone has been paid out 🎉</td></tr>`;
     }
+
+    // New dashboard tables
+    renderNextDueDraws();
+    renderPaidOutSummary();
 
     // Activity
     const activityTable = $("activityTable");
@@ -1218,11 +1294,10 @@
     refreshPayeeDrawFlags();
     populatePayeeSelects();
 
-    $("drawDate") && !$("drawDate").value && ($("drawDate").value = isoDate(thisPayoutDay()));
+    $("drawDate") && !$("drawDate").value && ($("drawDate").value = isoDate(thisPayoutDate()));
 
     const dateStr = $("drawDate")?.value || "";
-    // ✅ enforce draw amount from pot
-    setDrawAmountFromWeekPot(dateStr);
+    setDrawAmountFromPeriodPot(dateStr);
 
     const drawsTable = $("drawsTable");
     if (!drawsTable) return;
@@ -1244,32 +1319,33 @@
   }
 
   function renderWeekly() {
-    $("weekEnding") && !$("weekEnding").value && ($("weekEnding").value = isoDate(thisPayoutDay()));
+    // Now acts as “period summary”
+    $("weekEnding") && !$("weekEnding").value && ($("weekEnding").value = isoDate(thisPayoutDate()));
     const endStr = $("weekEnding")?.value;
     if (!endStr) return;
 
     const hv = handValue();
-    const weekCons = contributionsInWeek(endStr);
-    const totalWeekPaid = weekCons.reduce((s, c) => s + safeNumber(c.amount, 0), 0);
-    const totalWeekHands = totalWeekPaid / hv;
+    const cons = periodContributions(endStr);
+    const totalPaid = cons.reduce((s, c) => s + safeNumber(c.amount, 0), 0);
+    const totalHands = totalPaid / hv;
 
     const handsTotal = totalCommittedHands();
-    const funded = handsTotal > 0 && totalWeekHands >= handsTotal;
-    const carry = handsTotal > 0 ? Math.max(0, totalWeekHands - handsTotal) : 0;
+    const funded = handsTotal > 0 && totalHands >= handsTotal;
+    const carry = handsTotal > 0 ? Math.max(0, totalHands - handsTotal) : 0;
 
-    $("wkTotalMoney") && ($("wkTotalMoney").textContent = fmtGBP(totalWeekPaid));
-    $("wkTotalHands") && ($("wkTotalHands").textContent = totalWeekHands.toLocaleString("en-GB", { maximumFractionDigits: 0 }));
+    $("wkTotalMoney") && ($("wkTotalMoney").textContent = fmtGBP(totalPaid));
+    $("wkTotalHands") && ($("wkTotalHands").textContent = totalHands.toLocaleString("en-GB", { maximumFractionDigits: 0 }));
     $("wkCarryHands") && ($("wkCarryHands").textContent = carry.toLocaleString("en-GB", { maximumFractionDigits: 0 }));
 
     if ($("wkFundingText")) {
       $("wkFundingText").textContent =
         handsTotal > 0 ? (funded ? `Funded ✅ (need ${handsTotal} hands)` : `Not funded ⚠️ (need ${handsTotal} hands)`) : "Add payees to calculate hands";
     }
-    $("wkHandsText") && ($("wkHandsText").textContent = handsTotal > 0 ? `${totalWeekHands.toFixed(0)} / ${handsTotal} hands` : "—");
+    $("wkHandsText") && ($("wkHandsText").textContent = handsTotal > 0 ? `${totalHands.toFixed(0)} / ${handsTotal} hands` : "—");
     $("wkCarryText") && ($("wkCarryText").textContent = `Hands above total`);
 
     const byPayee = new Map();
-    for (const c of weekCons) {
+    for (const c of cons) {
       const cur = byPayee.get(c.payeeId) || { amount: 0, dates: new Set(), notes: [] };
       cur.amount += safeNumber(c.amount, 0);
       c.date && cur.dates.add(c.date);
@@ -1299,15 +1375,30 @@
       })
       .filter(Boolean);
 
-    weeklyTable.innerHTML = rows.join("") || `<tr><td colspan="5" class="muted">No payments recorded for this week.</td></tr>`;
+    weeklyTable.innerHTML = rows.join("") || `<tr><td colspan="5" class="muted">No payments recorded for this period.</td></tr>`;
   }
 
   function renderSettings() {
-    $("setHandValue") && ($("setHandValue").value = String(handValue()));
-    $("setDrawDay") && ($("setDrawDay").value = String(payoutDow()));
-    $("setCycleStart") && ($("setCycleStart").value = state.settings.cycleStartDate || "");
-    $("setNLocked") && ($("setNLocked").value = String(safeNumber(state.settings.nLocked, 0)));
-  }
+  // Read "preview" values from UI if present, otherwise fall back to state
+  const freqUI = $("setFrequency")?.value;
+  const freq = (freqUI === "monthly" || freqUI === "weekly")
+    ? freqUI
+    : frequency();
+
+  $("setHandValue") && ($("setHandValue").value = String(handValue()));
+  $("setFrequency") && ($("setFrequency").value = freq);
+
+  $("setDrawDay") && ($("setDrawDay").value = String(payoutDow()));
+  $("setMonthDay") && ($("setMonthDay").value = String(monthDay()));
+  $("setCycleStart") && ($("setCycleStart").value = state.settings.cycleStartDate || "");
+  $("setNLocked") && ($("setNLocked").value = String(safeNumber(state.settings.nLocked, 0)));
+
+  // ✅ Toggle sections immediately based on dropdown
+  const weeklyBox = $("weeklySettings");
+  const monthlyBox = $("monthlySettings");
+  if (weeklyBox) weeklyBox.style.display = (freq === "weekly") ? "block" : "none";
+  if (monthlyBox) monthlyBox.style.display = (freq === "monthly") ? "block" : "none";
+}
 
   function renderAll() {
     renderDashboard();
@@ -1341,6 +1432,15 @@
 
     $("payeeSearch")?.addEventListener("input", renderPayees);
     $("payeeFilter")?.addEventListener("change", renderPayees);
+
+    // Settings frequency toggle (just UI)
+    $("setFrequency")?.addEventListener("change", () => {
+  // Instantly show/hide the correct controls (without saving)
+    renderSettings();
+
+  // Optional: update helper text / dashboard labels live (no data changed yet)
+     toast("Draw frequency", `Switched UI to ${$("setFrequency").value}. Click Save Settings to apply.`);
+   });
 
     // Add Payee
     $("addPayeeBtn")?.addEventListener("click", () => {
@@ -1425,10 +1525,10 @@
       toast("Saved", `${p ? p.name : "Payee"} • ${fmtGBP(amount)} • ${hands} hands`);
     });
 
-    // Draw date change -> update drawAmount from pot
+    // Draw date change -> update drawAmount from period pot
     $("drawDate")?.addEventListener("change", () => {
       const dateStr = normalizeDateOrBlank($("drawDate")?.value || "");
-      setDrawAmountFromWeekPot(dateStr);
+      setDrawAmountFromPeriodPot(dateStr);
     });
 
     // Draws save (amount forced from pot)
@@ -1442,11 +1542,10 @@
       if (!date) return toast("Missing", "Please choose a valid payout date.");
       if (!payeeId) return toast("Missing", "Please choose a recipient.");
 
-      const amount = weekPotForEnd(date); // ✅ enforced
-      if (amount <= 0) return toast("No pot", "This week’s pot is £0. Record payments first before paying out.");
+      const amount = periodPotForDate(date); // ✅ enforced
+      if (amount <= 0) return toast("No pot", `This ${frequency()} pot is £0. Record payments first before paying out.`);
       if (!validMultipleOfHandValue(amount)) {
-        // This can happen if payments were entered not matching handValue after a settings change
-        return toast("Pot not valid", `Week pot (${fmtGBP(amount)}) is not a multiple of £${handValue()}. Check payments/hand value.`);
+        return toast("Pot not valid", `Period pot (${fmtGBP(amount)}) is not a multiple of £${handValue()}. Check payments/hand value.`);
       }
 
       const p = state.payees.find((x) => x.id === payeeId);
@@ -1470,18 +1569,18 @@
       toast("Recorded", `${p.name} • ${fmtGBP(amount)} • ${date}`);
     });
 
-    // Dashboard quick draw (amount = this week's pot)
+    // Dashboard quick draw (amount = current period pot)
     $("dashRecordDraw")?.addEventListener("click", () => {
       if (isCycleLocked()) return toast("Locked", "Cycle is completed and locked. Start a new cycle to continue.");
 
       const payeeId = $("dashRecipient")?.value || "";
-      const date = isoDate(thisPayoutDay());
-
       if (!payeeId) return toast("Missing", "No available recipients.");
 
-      const amount = weekPotForEnd(date); // ✅ enforced
-      if (amount <= 0) return toast("No pot", "This week’s pot is £0. Record payments first before paying out.");
-      if (!validMultipleOfHandValue(amount)) return toast("Pot not valid", `Week pot (${fmtGBP(amount)}) is not a multiple of £${handValue()}.`);
+      const date = isoDate(thisPayoutDate());
+      const amount = periodPotForDate(date);
+
+      if (amount <= 0) return toast("No pot", `This ${frequency()} pot is £0. Record payments first before paying out.`);
+      if (!validMultipleOfHandValue(amount)) return toast("Pot not valid", `Period pot (${fmtGBP(amount)}) is not a multiple of £${handValue()}.`);
 
       $("drawDate") && ($("drawDate").value = date);
       $("drawPayee") && ($("drawPayee").value = payeeId);
@@ -1492,47 +1591,71 @@
       $("saveDrawBtn")?.click();
     });
 
-    // Weekly navigation
+    // Period Summary navigation (same controls)
     $("refreshWeekBtn")?.addEventListener("click", renderWeekly);
     $("weekEnding")?.addEventListener("change", renderWeekly);
 
     $("prevWeekBtn")?.addEventListener("click", () => {
       const cur = parseISODate($("weekEnding")?.value);
       if (!cur) return;
-      $("weekEnding") && ($("weekEnding").value = isoDate(addDays(cur, -7)));
+
+      if (frequency() === "weekly") {
+        $("weekEnding") && ($("weekEnding").value = isoDate(addDays(cur, -7)));
+      } else {
+        const md = monthDay();
+        const d = new Date(cur.getFullYear(), cur.getMonth() - 1, md);
+        d.setHours(0,0,0,0);
+        $("weekEnding") && ($("weekEnding").value = isoDate(d));
+      }
       renderWeekly();
     });
 
     $("nextWeekBtn")?.addEventListener("click", () => {
       const cur = parseISODate($("weekEnding")?.value);
       if (!cur) return;
-      $("weekEnding") && ($("weekEnding").value = isoDate(addDays(cur, 7)));
+
+      if (frequency() === "weekly") {
+        $("weekEnding") && ($("weekEnding").value = isoDate(addDays(cur, 7)));
+      } else {
+        const md = monthDay();
+        const d = new Date(cur.getFullYear(), cur.getMonth() + 1, md);
+        d.setHours(0,0,0,0);
+        $("weekEnding") && ($("weekEnding").value = isoDate(d));
+      }
       renderWeekly();
     });
 
     // Save Settings
     $("saveSettingsBtn")?.addEventListener("click", () => {
       const hv = clampInt($("setHandValue")?.value, 1);
+
+      const freq = ($("setFrequency")?.value === "monthly") ? "monthly" : "weekly";
       const dowRaw = safeNumber($("setDrawDay")?.value, 2);
       const dow = ((Math.floor(dowRaw) % 7) + 7) % 7;
+
+      let md = clampInt($("setMonthDay")?.value, 1);
+      md = Math.min(28, Math.max(1, md));
+
       const start = normalizeDateOrBlank($("setCycleStart")?.value || "");
       const nLocked = safeNumber($("setNLocked")?.value, 0);
 
       state.settings.handValue = hv;
+      state.settings.frequency = freq;
       state.settings.payoutDow = dow;
+      state.settings.monthDay = md;
       if (start) state.settings.cycleStartDate = start;
       state.settings.nLocked = nLocked;
 
-      // Recalculate hands for existing payments (amounts unchanged)
+      // Recalculate hands for existing payments
       state.contributions = state.contributions.map((c) => ({
         ...c,
         hands: safeNumber(c.amount, 0) / hv,
       }));
 
-      logActivity("Settings", `Hand £${hv}, draw day ${dayName(dow)}`);
+      logActivity("Settings", `Mode ${freq} • Hand £${hv} • ${freq === "weekly" ? `Day ${dayName(dow)}` : `Month day ${md}`}`);
       saveState();
       renderAll();
-      toast("Saved", `Hand value £${hv} • Target pot ${fmtGBP(basePot())}`);
+      toast("Saved", `Mode: ${freq} • Target pot ${fmtGBP(targetPeriodPot())}`);
     });
 
     // Export / Import / Reset
@@ -1573,7 +1696,7 @@
       toast("Reset", "All data cleared.");
     });
 
-    // Modal handlers
+    // Modal
     $("payeeModalCloseBtn")?.addEventListener("click", closePayeeModal);
     $("payeeModalCancelBtn")?.addEventListener("click", closePayeeModal);
     $("payeeModalSaveBtn")?.addEventListener("click", savePayeeModal);
@@ -1610,23 +1733,14 @@
     attachHandlers();
     populatePayeeSelects();
 
-    // defaults
-    $("drawDate") && ($("drawDate").value = isoDate(thisPayoutDay()));
-    $("weekEnding") && ($("weekEnding").value = isoDate(thisPayoutDay()));
-
-    // enforce readonly amounts on load
+    // Defaults
+    $("drawDate") && ($("drawDate").value = isoDate(thisPayoutDate()));
+    $("weekEnding") && ($("weekEnding").value = isoDate(thisPayoutDate()));
     $("drawAmount") && ($("drawAmount").readOnly = true);
     $("dashDrawAmount") && ($("dashDrawAmount").readOnly = true);
 
     renderAll();
     showPage("dashboard");
-
-    // PWA service worker (optional)
-    if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => {
-        navigator.serviceWorker.register("./service-worker.js").catch(() => {});
-      });
-    }
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
