@@ -527,6 +527,39 @@
                 <div class="help">Used for weekly summary windows and payout planning.</div>
               </div>
             </div>
+             
+            <div class="row">
+             <div class="field">
+              <label>Draw frequency</label>
+             <select id="setFrequency">
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+             </select>
+
+             <div class="field" id="weeklySettings"> ... </div>
+             <div class="field" id="monthlySettings" style="display:none"> ... </div>
+              <div class="help">Controls how pots are calculated and how often payouts happen.</div>
+            </div>
+
+            <div class="field" id="weeklySettings">
+              <label>Draw day (weekly)</label>
+              <select id="setDrawDay">
+               <option value="1">Monday</option>
+               <option value="2">Tuesday</option>
+               <option value="3">Wednesday</option>
+               <option value="4">Thursday</option>
+               <option value="5">Friday</option>
+               <option value="6">Saturday</option>
+               <option value="0">Sunday</option>
+             </select>
+           </div>
+
+           <div class="field" id="monthlySettings" style="display:none">
+             <label>Draw day of month (monthly)</label>
+             <input id="setMonthDay" type="number" min="1" max="28" step="1" value="1" />
+            <div class="help">Use 1–28 to work in every month.</div>
+          </div>
+        </div>
 
             <div class="row">
               <div class="field">
